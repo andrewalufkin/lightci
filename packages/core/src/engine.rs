@@ -145,7 +145,7 @@ impl PipelineEngine {
 
     pub async fn list_pipelines(&self, page: i32, limit: i32, _filter: Option<String>) -> Result<(Vec<Pipeline>, i64), EngineError> {
         let db = self.db.lock().await;
-        let pipelines = db.list_pipelines(limit as i64, (page * limit) as i64)
+        let pipelines = db.list_pipelines(limit as i64, ((page - 1) * limit) as i64)
             .await
             .map_err(|e| EngineError::DatabaseError(e.to_string()))?;
         Ok((pipelines.clone(), pipelines.len() as i64))
@@ -282,6 +282,28 @@ impl PipelineEngine {
             .map_err(|e| EngineError::DatabaseError(e.to_string()))?;
 
         Ok(())
+    }
+
+    fn pipeline_to_proto(&self, pipeline: &Pipeline) -> proto::Pipeline {
+        proto::Pipeline {
+            id: pipeline.id.clone(),
+            name: pipeline.name.clone(),
+            repository: pipeline.repository.clone(),
+            workspace_id: pipeline.workspace_id.clone(),
+            description: pipeline.description.clone().unwrap_or_default(),
+            default_branch: pipeline.default_branch.clone(),
+            status: pipeline.status as i32,
+            steps: pipeline.steps.iter().map(|s| proto::Step {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                command: s.command.clone(),
+                timeout_seconds: s.timeout_seconds,
+                environment: s.environment.clone(),
+                dependencies: s.dependencies.clone(),
+            }).collect(),
+            created_at: pipeline.created_at.to_rfc3339(),
+            updated_at: pipeline.updated_at.to_rfc3339(),
+        }
     }
 }
 
@@ -895,7 +917,7 @@ impl Engine {
 
     pub async fn list_pipelines(&self, page: i32, limit: i32, _filter: Option<String>) -> Result<(Vec<Pipeline>, i64), EngineError> {
         let db = self.db.lock().await;
-        let pipelines = db.list_pipelines(limit as i64, (page * limit) as i64)
+        let pipelines = db.list_pipelines(limit as i64, ((page - 1) * limit) as i64)
             .await
             .map_err(|e| EngineError::DatabaseError(e.to_string()))?;
         Ok((pipelines.clone(), pipelines.len() as i64))
@@ -1087,8 +1109,9 @@ impl EngineService for PipelineEngine {
             default_branch: req.default_branch,
             status: PipelineStatus::Pending,
             steps: req.steps.into_iter()
-                .map(|s| Step {
-                    id: Uuid::new_v4().to_string(),
+                .enumerate()
+                .map(|(index, s)| Step {
+                    id: format!("step-{}", index + 1),
                     name: s.name,
                     command: s.command,
                     timeout_seconds: s.timeout_seconds,
@@ -1104,28 +1127,7 @@ impl EngineService for PipelineEngine {
         };
 
         match self.create_pipeline(pipeline.clone()).await {
-            Ok(_) => {
-                let proto_pipeline = proto::Pipeline {
-                    id: pipeline.id,
-                    name: pipeline.name,
-                    repository: pipeline.repository,
-                    workspace_id: pipeline.workspace_id,
-                    description: pipeline.description.unwrap_or_default(),
-                    default_branch: pipeline.default_branch,
-                    status: pipeline.status as i32,
-                    steps: pipeline.steps.into_iter().map(|s| proto::Step {
-                        id: s.id,
-                        name: s.name,
-                        command: s.command,
-                        timeout_seconds: s.timeout_seconds,
-                        environment: s.environment,
-                        dependencies: s.dependencies,
-                    }).collect(),
-                    created_at: pipeline.created_at.to_rfc3339(),
-                    updated_at: pipeline.updated_at.to_rfc3339(),
-                };
-                Ok(Response::new(proto_pipeline))
-            },
+            Ok(created) => Ok(Response::new(self.pipeline_to_proto(&created))),
             Err(e) => Err(Status::internal(e.to_string())),
         }
     }

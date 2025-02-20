@@ -388,7 +388,7 @@ pub struct DbPipeline {
 pub struct DbStep {
     pub id: String,
     pub pipeline_id: Uuid,
-    pub build_id: Uuid,
+    pub build_id: Option<Uuid>,
     pub name: String,
     pub command: String,
     pub status: String,

@@ -4,6 +4,7 @@ use chrono::Utc;
 use std::collections::HashMap;
 use thiserror::Error;
 use uuid::Uuid;
+use serde_json;
 
 #[derive(Error, Debug)]
 pub enum DatabaseError {
@@ -167,5 +168,64 @@ impl Database {
         .status;
 
         Ok(status.into())
+    }
+
+    pub async fn update_pipeline(&self, pipeline: &Pipeline) -> Result<Pipeline, DatabaseError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Update pipeline
+        sqlx::query!(
+            r#"
+            UPDATE pipelines
+            SET name = $1, repository = $2, workspace_id = $3, description = $4, default_branch = $5, status = $6, updated_at = $7
+            WHERE id = $8
+            RETURNING *
+            "#,
+            pipeline.name,
+            pipeline.repository,
+            pipeline.workspace_id,
+            pipeline.description,
+            pipeline.default_branch,
+            pipeline.status,
+            Utc::now(),
+            Uuid::parse_str(&pipeline.id).map_err(|e| sqlx::Error::Protocol(e.to_string()))?
+        )
+        .fetch_one(&mut tx)
+        .await?;
+
+        // Delete existing steps
+        sqlx::query!(
+            r#"
+            DELETE FROM pipeline_steps WHERE pipeline_id = $1
+            "#,
+            Uuid::parse_str(&pipeline.id).map_err(|e| sqlx::Error::Protocol(e.to_string()))?
+        )
+        .execute(&mut tx)
+        .await?;
+
+        // Insert new steps
+        for step in &pipeline.steps {
+            sqlx::query!(
+                r#"
+                INSERT INTO pipeline_steps (
+                    id, pipeline_id, name, command, environment,
+                    dependencies, timeout_seconds
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                "#,
+                step.id,
+                Uuid::parse_str(&pipeline.id).map_err(|e| sqlx::Error::Protocol(e.to_string()))?,
+                step.name,
+                step.command,
+                serde_json::to_value(&step.environment).unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
+                &step.dependencies,
+                step.timeout_seconds as i32,
+            )
+            .execute(&mut tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(pipeline.clone())
     }
 } 

@@ -235,7 +235,7 @@ impl Database {
             SELECT 
                 ps.id as "id!: String",
                 ps.pipeline_id as "pipeline_id!: Uuid",
-                NULL as "build_id!: Uuid",
+                NULL as "build_id?: Uuid",
                 ps.name as "name!: String",
                 ps.command as "command!: String",
                 'pending' as "status!: String",
@@ -296,7 +296,7 @@ impl Database {
                 SELECT 
                     ps.id as "id!: String",
                     ps.pipeline_id as "pipeline_id!: Uuid",
-                    NULL as "build_id!: Uuid",
+                    NULL as "build_id?: Uuid",
                     ps.name as "name!: String",
                     ps.command as "command!: String",
                     'pending' as "status!: String",
@@ -421,7 +421,7 @@ impl Database {
             SELECT 
                 u.id as "id!: String",
                 b.pipeline_id as "pipeline_id!: Uuid",
-                u.build_id as "build_id!: Uuid",
+                u.build_id as "build_id?: Uuid",
                 u.name as "name!: String",
                 u.command as "command!: String",
                 u.status as "status!: String",
@@ -452,7 +452,7 @@ impl Database {
             SELECT 
                 ps.id as "id!: String",
                 ps.pipeline_id as "pipeline_id!: Uuid",
-                NULL as "build_id!: Uuid",
+                NULL as "build_id?: Uuid",
                 ps.name as "name!: String",
                 ps.command as "command!: String",
                 'pending' as "status!: String",
@@ -500,7 +500,7 @@ impl Database {
             SELECT 
                 s.id as "id!: String",
                 b.pipeline_id as "pipeline_id!: Uuid",
-                s.build_id as "build_id!: Uuid",
+                s.build_id as "build_id?: Uuid",
                 s.name as "name!: String",
                 s.command as "command!: String",
                 s.status as "status!: String",
@@ -684,7 +684,7 @@ impl From<Step> for DbStep {
         DbStep {
             id: step.id.clone(),
             pipeline_id: Uuid::new_v4(), // This should be set by the caller
-            build_id: Uuid::new_v4(), // This should be set by the caller
+            build_id: None, // This should be set by the caller when needed
             name: step.name.clone(),
             command: step.command.clone(),
             status: step.status.to_string(),
