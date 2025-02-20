@@ -18,7 +18,13 @@ import {
   ListBuildsResponse,
   UploadArtifactRequest,
 } from '../proto/proto/engine';
-import { broadcastBuildUpdate } from '../routes/builds';
+
+// Remove the circular dependency
+// import { broadcastBuildUpdate } from '../routes/builds';
+
+// Add an event emitter for build updates
+import { EventEmitter } from 'events';
+export const buildEvents = new EventEmitter();
 
 interface PaginationOptions {
   page: number;
@@ -55,42 +61,6 @@ export class EngineService {
       'grpc.http2.min_time_between_pings_ms': 10000,
       'grpc.keepalive_permit_without_calls': 1,
     });
-
-    // Subscribe to step status updates from the core engine
-    this.subscribeToStepUpdates();
-  }
-
-  private async subscribeToStepUpdates() {
-    try {
-      const stream = this.client.subscribeToStepUpdates({});
-      
-      stream.on('data', (update: any) => {
-        if (update.buildId && update.step && update.status) {
-          broadcastBuildUpdate(update.buildId, {
-            type: 'step_status',
-            step: update.step,
-            status: update.status.toLowerCase(),
-            timestamp: Date.now()
-          });
-        }
-      });
-
-      stream.on('error', (error: Error) => {
-        console.error('Step update stream error:', error);
-        // Attempt to reconnect after a delay
-        setTimeout(() => this.subscribeToStepUpdates(), 5000);
-      });
-
-      stream.on('end', () => {
-        console.log('Step update stream ended, reconnecting...');
-        // Attempt to reconnect immediately
-        this.subscribeToStepUpdates();
-      });
-    } catch (error) {
-      console.error('Failed to subscribe to step updates:', error);
-      // Attempt to reconnect after a delay
-      setTimeout(() => this.subscribeToStepUpdates(), 5000);
-    }
   }
 
   private bindGrpcMethod<TRequest, TResponse>(
