@@ -318,12 +318,22 @@ struct PipelineExecution {
 
 impl PipelineExecution {
     fn new(pipeline: Pipeline, executor: Box<dyn Executor>, build_id: Uuid, status_tx: broadcast::Sender<StepStatusUpdate>) -> Self {
+        let results = pipeline.steps.iter().map(|step| ModelStepResult {
+            step_id: step.id.clone(),
+            status: StepStatus::Pending,
+            output: String::new(),
+            error: String::new(),
+            started_at: None,
+            completed_at: None,
+            exit_code: None,
+        }).collect();
+
         Self {
             pipeline,
             executor,
             build_id,
             status_tx,
-            results: Vec::new(),
+            results,
             executing_steps: HashSet::new(),
         }
     }
@@ -379,59 +389,61 @@ impl PipelineExecution {
                 while let Some(result) = join_set.join_next().await {
                     let (step_id, execution_result) = result.expect("Task failed");
                     
-                    let result_index = self.results
+                    if let Some(result_index) = self.results
                         .iter()
-                        .position(|r| r.step_id.to_string() == step_id)
-                        .unwrap();
+                        .position(|r| r.step_id == step_id)
+                    {
+                        match execution_result {
+                            Ok(result) => {
+                                let model_result = ModelStepResult {
+                                    step_id: result.step_id,
+                                    status: result.status,
+                                    output: result.output,
+                                    error: result.error,
+                                    started_at: result.started_at,
+                                    completed_at: result.completed_at,
+                                    exit_code: result.exit_code,
+                                };
+                                self.results[result_index] = model_result;
+                                
+                                if let Some(dependents) = graph.get(&step_id) {
+                                    for dependent in dependents {
+                                        let dependent_step = self.pipeline.steps
+                                            .iter()
+                                            .find(|s| s.id == *dependent)
+                                            .ok_or_else(|| EngineError::ConfigError(format!("Dependent step {} not found", dependent)))?;
 
-                    match execution_result {
-                        Ok(result) => {
-                            let model_result = ModelStepResult {
-                                step_id: result.step_id,
-                                status: result.status,
-                                output: result.output,
-                                error: result.error,
-                                started_at: result.started_at,
-                                completed_at: result.completed_at,
-                                exit_code: result.exit_code,
-                            };
-                            self.results[result_index] = model_result;
-                            
-                            if let Some(dependents) = graph.get(&step_id) {
-                                for dependent in dependents {
-                                    let dependent_step = self.pipeline.steps
-                                        .iter()
-                                        .find(|s| s.id.to_string() == *dependent)
-                                        .unwrap();
+                                        let all_dependencies_complete = dependent_step.dependencies
+                                            .iter()
+                                            .all(|dep_id| {
+                                                self.results
+                                                    .iter()
+                                                    .any(|r| r.step_id == *dep_id && r.status == StepStatus::Success)
+                                            });
 
-                                    let all_dependencies_complete = dependent_step.dependencies
-                                        .iter()
-                                        .all(|dep_id| {
-                                            self.results
-                                                .iter()
-                                                .any(|r| r.step_id.to_string() == *dep_id && r.status == StepStatus::Success)
-                                        });
-
-                                    if all_dependencies_complete {
-                                        ready_steps.insert(dependent.clone());
+                                        if all_dependencies_complete {
+                                            ready_steps.insert(dependent.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                self.results[result_index].status = StepStatus::Failed;
+                                self.results[result_index].error = err.to_string();
+                                self.results[result_index].completed_at = Some(Utc::now());
+                                
+                                if let Some(dependents) = graph.get(&step_id) {
+                                    for dependent in dependents {
+                                        PipelineExecution::mark_step_and_dependents_skipped(dependent, &graph, &mut self.results);
                                     }
                                 }
                             }
                         }
-                        Err(err) => {
-                            self.results[result_index].status = StepStatus::Failed;
-                            self.results[result_index].error = err.to_string();
-                            self.results[result_index].completed_at = Some(Utc::now());
-                            
-                            if let Some(dependents) = graph.get(&step_id) {
-                                for dependent in dependents {
-                                    PipelineExecution::mark_step_and_dependents_skipped(dependent, &graph, &mut self.results);
-                                }
-                            }
-                        }
-                    }
 
-                    self.executing_steps.remove(&step_id);
+                        self.executing_steps.remove(&step_id);
+                    } else {
+                        return Err(EngineError::ConfigError(format!("Step result for {} not found", step_id)));
+                    }
                 }
             }
     

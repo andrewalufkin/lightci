@@ -191,7 +191,8 @@ impl Database {
     }
 
     pub async fn create_pipeline(&self, pipeline: Pipeline) -> Result<Pipeline, sqlx::Error> {
-        let db_pipeline = DbPipeline::from(pipeline);
+        let mut tx = self.pool.begin().await?;
+        let db_pipeline = DbPipeline::from(pipeline.clone());
 
         let record = sqlx::query_as!(
             DbPipeline,
@@ -210,10 +211,47 @@ impl Database {
             db_pipeline.created_at,
             db_pipeline.updated_at
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
 
-        Ok(Pipeline::from(record))
+        // Insert steps
+        for step in &pipeline.steps {
+            let db_step = DbStep::from(step.clone());
+            // Convert dependencies to a string array
+            let dependencies = match serde_json::from_value::<Vec<String>>(db_step.dependencies.clone()) {
+                Ok(deps) => deps,
+                Err(_) => Vec::new(),
+            };
+            
+            sqlx::query!(
+                r#"
+                INSERT INTO pipeline_steps (
+                    id, pipeline_id, name, command, status, environment,
+                    dependencies, timeout_seconds, created_at, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                "#,
+                db_step.id,
+                db_pipeline.id,
+                db_step.name,
+                db_step.command,
+                db_step.status,
+                db_step.environment,
+                &dependencies as &[String],
+                db_step.timeout_seconds,
+                db_step.created_at,
+                db_step.updated_at,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+
+        // Return the pipeline with steps
+        let mut created_pipeline = Pipeline::from(record);
+        created_pipeline.steps = pipeline.steps;
+        Ok(created_pipeline)
     }
 
     pub async fn get_pipeline(&self, id: &str) -> Result<Pipeline, sqlx::Error> {
@@ -235,18 +273,26 @@ impl Database {
             SELECT 
                 ps.id as "id!: String",
                 ps.pipeline_id as "pipeline_id!: Uuid",
-                NULL as "build_id?: Uuid",
+                s.build_id as "build_id?: Uuid",
                 ps.name as "name!: String",
                 ps.command as "command!: String",
-                'pending' as "status!: String",
+                COALESCE(s.status, 'pending') as "status!: String",
                 ps.environment as "environment!: JsonValue",
                 COALESCE(jsonb_build_array(ps.dependencies), '[]'::jsonb) as "dependencies!: JsonValue",
                 ps.timeout_seconds as "timeout_seconds?: i32",
-                0 as "retries?: i32",
-                NULL as "working_dir?: String",
+                COALESCE(s.retries, 0) as "retries?: i32",
+                s.working_dir as "working_dir?: String",
                 ps.created_at as "created_at!: DateTime<Utc>",
-                ps.created_at as "updated_at!: DateTime<Utc>"
+                COALESCE(s.updated_at, ps.created_at) as "updated_at!: DateTime<Utc>"
             FROM pipeline_steps ps
+            LEFT JOIN LATERAL (
+                SELECT s.*
+                FROM steps s
+                INNER JOIN builds b ON s.build_id = b.id
+                WHERE s.name = ps.name AND b.pipeline_id = ps.pipeline_id
+                ORDER BY b.created_at DESC
+                LIMIT 1
+            ) s ON true
             WHERE ps.pipeline_id = $1
             "#,
             pipeline_id
@@ -296,18 +342,26 @@ impl Database {
                 SELECT 
                     ps.id as "id!: String",
                     ps.pipeline_id as "pipeline_id!: Uuid",
-                    NULL as "build_id?: Uuid",
+                    s.build_id as "build_id?: Uuid",
                     ps.name as "name!: String",
                     ps.command as "command!: String",
-                    'pending' as "status!: String",
+                    COALESCE(s.status, 'pending') as "status!: String",
                     ps.environment as "environment!: JsonValue",
                     COALESCE(jsonb_build_array(ps.dependencies), '[]'::jsonb) as "dependencies!: JsonValue",
                     ps.timeout_seconds as "timeout_seconds?: i32",
-                    0 as "retries?: i32",
-                    NULL as "working_dir?: String",
+                    COALESCE(s.retries, 0) as "retries?: i32",
+                    s.working_dir as "working_dir?: String",
                     ps.created_at as "created_at!: DateTime<Utc>",
-                    ps.created_at as "updated_at!: DateTime<Utc>"
+                    COALESCE(s.updated_at, ps.created_at) as "updated_at!: DateTime<Utc>"
                 FROM pipeline_steps ps
+                LEFT JOIN LATERAL (
+                    SELECT s.*
+                    FROM steps s
+                    INNER JOIN builds b ON s.build_id = b.id
+                    WHERE s.name = ps.name AND b.pipeline_id = ps.pipeline_id
+                    ORDER BY b.created_at DESC
+                    LIMIT 1
+                ) s ON true
                 WHERE ps.pipeline_id = $1
                 "#,
                 record.id
@@ -452,18 +506,26 @@ impl Database {
             SELECT 
                 ps.id as "id!: String",
                 ps.pipeline_id as "pipeline_id!: Uuid",
-                NULL as "build_id?: Uuid",
+                s.build_id as "build_id?: Uuid",
                 ps.name as "name!: String",
                 ps.command as "command!: String",
-                'pending' as "status!: String",
+                COALESCE(s.status, 'pending') as "status!: String",
                 ps.environment as "environment!: JsonValue",
                 COALESCE(jsonb_build_array(ps.dependencies), '[]'::jsonb) as "dependencies!: JsonValue",
                 ps.timeout_seconds as "timeout_seconds?: i32",
-                0 as "retries?: i32",
-                NULL as "working_dir?: String",
+                COALESCE(s.retries, 0) as "retries?: i32",
+                s.working_dir as "working_dir?: String",
                 ps.created_at as "created_at!: DateTime<Utc>",
-                ps.created_at as "updated_at!: DateTime<Utc>"
+                COALESCE(s.updated_at, ps.created_at) as "updated_at!: DateTime<Utc>"
             FROM pipeline_steps ps
+            LEFT JOIN LATERAL (
+                SELECT s.*
+                FROM steps s
+                INNER JOIN builds b ON s.build_id = b.id
+                WHERE s.name = ps.name AND b.pipeline_id = ps.pipeline_id
+                ORDER BY b.created_at DESC
+                LIMIT 1
+            ) s ON true
             WHERE ps.pipeline_id = $1
             "#,
             pipeline_id
@@ -551,7 +613,7 @@ impl Database {
                 workspace_id: record.workspace_id,
                 description: record.description,
                 default_branch: record.default_branch,
-                status: record.status.to_string(),
+                status: record.status,
                 created_at: record.created_at,
                 updated_at: record.updated_at,
             });

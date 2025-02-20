@@ -55,7 +55,7 @@ impl Database {
                 r#"
                 INSERT INTO pipeline_steps (
                     id, pipeline_id, name, command, status, environment,
-                    dependencies, timeout_seconds, retries, working_dir
+                    dependencies, timeout_seconds, created_at, updated_at
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 "#,
@@ -63,12 +63,12 @@ impl Database {
                 pipeline.id,
                 step.name,
                 step.command,
-                step.status,
+                step.status.to_string(),
                 &step.environment,
                 &step.dependencies,
                 step.timeout_seconds as i32,
-                step.retries as i32,
-                step.working_dir,
+                step.created_at,
+                step.updated_at,
             )
             .execute(&mut tx)
             .await?;
@@ -89,14 +89,21 @@ impl Database {
             id
         )
         .fetch_one(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => DatabaseError::NotFound,
+            e => DatabaseError::Sqlx(e)
+        })?;
 
         let steps = sqlx::query!(
             r#"
-            SELECT id, name, command, status, environment, dependencies,
-                   timeout_seconds, retries, working_dir
+            SELECT 
+                id, pipeline_id, name, command, status,
+                environment, dependencies, timeout_seconds,
+                created_at, updated_at
             FROM pipeline_steps
             WHERE pipeline_id = $1
+            ORDER BY created_at ASC
             "#,
             id
         )
@@ -109,12 +116,12 @@ impl Database {
                 id: row.id,
                 name: row.name,
                 command: row.command,
-                status: row.status,
+                status: row.status.parse().unwrap_or(StepStatus::Pending),
                 environment: row.environment.unwrap_or_default(),
                 dependencies: row.dependencies.unwrap_or_default(),
-                timeout_seconds: row.timeout_seconds as u32,
-                retries: row.retries as u32,
-                working_dir: row.working_dir,
+                timeout_seconds: row.timeout_seconds.unwrap_or(0) as u32,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
             })
             .collect();
 

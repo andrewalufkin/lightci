@@ -20,10 +20,12 @@ CREATE TABLE IF NOT EXISTS pipeline_steps (
     pipeline_id UUID NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     command TEXT NOT NULL,
-    timeout_seconds BIGINT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    timeout_seconds INTEGER,
     environment JSONB NOT NULL DEFAULT '{}',
     dependencies TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     PRIMARY KEY (pipeline_id, id)
 );
 
@@ -107,6 +109,11 @@ CREATE TRIGGER update_pipelines_updated_at
 
 CREATE TRIGGER update_builds_updated_at
     BEFORE UPDATE ON builds
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_pipeline_steps_updated_at
+    BEFORE UPDATE ON pipeline_steps
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
