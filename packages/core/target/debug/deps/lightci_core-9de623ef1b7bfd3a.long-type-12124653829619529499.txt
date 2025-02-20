@@ -1,1 +1,0 @@
-sqlx::query::Map<'_, Postgres, {closure@/Users/andrewadams/.cargo/registry/src/index.crates.io-6f17d22bba15001f/sqlx-0.7.4/src/macros/mod.rs:576:9: 576:102}, PgArguments>

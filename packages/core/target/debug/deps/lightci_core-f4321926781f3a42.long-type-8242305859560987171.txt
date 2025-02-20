@@ -1,1 +1,0 @@
-std::iter::Map<std::slice::Iter<'_, models::Step>, for<'a> fn(&'a models::Step) -> {type error} {GrpcServer::to_proto_step}>

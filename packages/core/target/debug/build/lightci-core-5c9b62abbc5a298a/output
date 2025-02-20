@@ -1,4 +1,0 @@
-OUT_DIR is /Users/andrewadams/Desktop/lightci/packages/core/target/debug/build/lightci-core-5c9b62abbc5a298a/out
-cargo:rerun-if-changed=proto/engine.proto
-cargo:rerun-if-changed=proto
-Proto compilation completed

@@ -1,1 +1,0 @@
-std::iter::Map<std::vec::IntoIter<models::Pipeline>, for<'a> fn(&'a models::Pipeline) -> proto::Pipeline {pipeline_to_proto}>
