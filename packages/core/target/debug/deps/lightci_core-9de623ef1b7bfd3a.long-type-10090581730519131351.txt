@@ -1,0 +1,1 @@
+std::iter::Map<std::vec::IntoIter<DbBuild>, fn(models::Build) -> models::Build {<models::Build as From<models::Build>>::from}>

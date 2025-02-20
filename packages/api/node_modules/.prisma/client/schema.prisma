@@ -1,0 +1,59 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Pipeline {
+  id            String   @id @default(uuid())
+  name          String
+  repository    String
+  defaultBranch String   @default("main")
+  workspaceId   String
+  status        String   @default("pending")
+  description   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  builds        Build[]
+}
+
+model Build {
+  id          String     @id @default(uuid())
+  pipelineId  String
+  status      String     @default("pending")
+  branch      String
+  commit      String
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  startedAt   DateTime?
+  completedAt DateTime?
+  duration    Int?
+  artifacts   Artifact[]
+  pipeline    Pipeline   @relation(fields: [pipelineId], references: [id])
+  logs        BuildLog[]
+}
+
+model BuildLog {
+  id        String   @id @default(uuid())
+  buildId   String
+  stepId    String
+  content   String
+  level     String?
+  timestamp DateTime @default(now())
+  build     Build    @relation(fields: [buildId], references: [id])
+}
+
+model Artifact {
+  id          String   @id @default(uuid())
+  buildId     String
+  name        String
+  path        String
+  size        Int
+  contentType String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  build       Build    @relation(fields: [buildId], references: [id])
+}

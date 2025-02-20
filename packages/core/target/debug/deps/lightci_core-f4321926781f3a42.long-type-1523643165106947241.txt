@@ -1,0 +1,1 @@
+tonic::Response<Pin<Box<dyn Stream<Item = Result<DownloadArtifactResponse, tonic::Status>> + std::marker::Send>>>

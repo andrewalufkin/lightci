@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE builds\n            SET status = $1, started_at = $2, completed_at = $3,\n                parameters = $4\n            WHERE id = $5\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Timestamptz",
+        "Jsonb",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9d7a5fe8d5ffa41e6a5db9442fa0d9bab6854b166c0928932aa94be81c5b2e3e"
+}
