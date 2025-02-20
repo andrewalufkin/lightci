@@ -1,6 +1,38 @@
+# IDE and editor files
 /.history
+/.vscode
+/.idea
+*.swp
+*.swo
+
+# Dependencies
 /node_modules
 /package-lock.json
 /package.json
-/packages
 /workspace
+
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+Cargo.lock
+
+# React/Node
+**/node_modules/
+**/.env
+**/dist
+**/.cache
+**/build
+**/.DS_Store
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/.pnp
+**/.pnp.js
+**/coverage
+**/.next
+**/.vercel
+**/.env.local
+**/.env.development.local
+**/.env.test.local
+**/.env.production.local
