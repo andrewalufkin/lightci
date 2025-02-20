@@ -1,0 +1,23 @@
+// Pipelines
+GET    /api/pipelines              // List all pipelines
+POST   /api/pipelines              // Create new pipeline
+GET    /api/pipelines/:id          // Get pipeline details
+PUT    /api/pipelines/:id          // Update pipeline
+DELETE /api/pipelines/:id          // Delete pipeline
+POST   /api/pipelines/:id/trigger  // Trigger pipeline run
+
+// Builds
+GET    /api/builds                 // List all builds
+GET    /api/builds/:id             // Get build details
+POST   /api/builds/:id/cancel      // Cancel running build
+GET    /api/builds/:id/logs        // Stream build logs
+GET    /api/builds/:id/artifacts   // List build artifacts
+
+// Artifacts
+GET    /api/artifacts/:id          // Download artifact
+POST   /api/artifacts              // Upload artifact
+DELETE /api/artifacts/:id          // Delete artifact
+
+// Webhooks
+POST   /api/webhooks/github        // GitHub webhook handler
+POST   /api/webhooks/gitlab        // GitLab webhook handler

@@ -1,0 +1,38 @@
+Database Strategy:
+PostgreSQL serves as our primary database, chosen for its robust feature set and excellent scalability path. During development, we use a local PostgreSQL instance managed via Docker, while production deployments will utilize managed PostgreSQL services (e.g., AWS RDS).
+Key Components:
+
+Prisma ORM:
+
+Provides type-safe database queries
+Handles schema migrations
+Generates TypeScript types from schema
+Supports both development and production environments
+
+
+Schema Design:
+
+Normalized structure for Pipelines, Builds, and Artifacts
+JSONB storage for flexible pipeline configurations
+Strong referential integrity between related entities
+Efficient indexing for common query patterns
+
+
+Development Setup:
+
+Local PostgreSQL via Docker Compose
+Development database seeding and migration tools
+Environment-based configuration
+Health check and monitoring capabilities
+
+
+Production Readiness:
+
+Seamless transition to cloud-hosted databases
+Connection pooling and optimization
+Environment-based configuration
+Backup and recovery strategies
+
+
+
+The database architecture prioritizes developer experience during the development phase while maintaining a clear path to production deployment, ensuring that no significant architectural changes are needed when moving to a production environment.
