@@ -115,4 +115,24 @@ export class BuildController {
       }
     }
   }
+
+  async deleteBuild(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const build = await this.engineService.getBuild(id);
+      
+      if (!build) {
+        throw new NotFoundError('Build not found');
+      }
+
+      await this.engineService.deleteBuild(id);
+      res.status(204).send();
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        res.status(404).json({ error: error.message });
+      } else {
+        res.status(500).json({ error: 'Failed to delete build' });
+      }
+    }
+  }
 }

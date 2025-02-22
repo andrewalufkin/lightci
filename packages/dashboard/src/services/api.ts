@@ -1,13 +1,21 @@
-import axios, { AxiosInstance } from 'axios';
+import axios from 'axios';
 
 export interface Pipeline {
   id: string;
   name: string;
   repository: string;
   defaultBranch: string;
+  description?: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   createdAt: string;
   updatedAt: string;
+  steps: {
+    name: string;
+    status: 'pending' | 'running' | 'completed' | 'failed';
+    duration?: string;
+    logs?: string[];
+    error?: string;
+  }[];
 }
 
 export interface Build {
@@ -23,6 +31,17 @@ export interface Build {
   duration?: number;
   logs?: BuildLog[];
   artifacts?: Artifact[];
+  stepResults?: {
+    id: string;
+    name: string;
+    status: 'pending' | 'running' | 'completed' | 'failed';
+    command: string;
+    output?: string;
+    error?: string;
+    duration?: number;
+    startedAt?: string;
+    completedAt?: string;
+  }[];
 }
 
 export interface BuildLog {
@@ -54,16 +73,37 @@ export interface PaginatedResponse<T> {
 }
 
 class ApiClient {
-  private client: AxiosInstance;
+  private client: any;
 
   constructor() {
+    const baseURL = (import.meta.env.VITE_API_URL || 'http://localhost:3000') + '/api';
+    console.log('API Client initialized with baseURL:', baseURL);
+    
     this.client = axios.create({
-      baseURL: import.meta.env.VITE_API_URL || 'http://localhost:3000/api',
+      baseURL,
       headers: {
         'Content-Type': 'application/json',
         'X-API-Key': import.meta.env.VITE_API_KEY || 'dev-api-key'
       }
     });
+
+    // Add request interceptor for debugging
+    this.client.interceptors.request.use((config: any) => {
+      console.log('Making request to:', config.url, 'with headers:', config.headers);
+      return config;
+    });
+
+    // Add response interceptor for debugging
+    this.client.interceptors.response.use(
+      (response: any) => {
+        console.log('Received response:', response.status, response.data);
+        return response;
+      },
+      (error: any) => {
+        console.error('API Error:', error.response?.status, error.response?.data);
+        return Promise.reject(error);
+      }
+    );
   }
 
   // Pipeline endpoints
@@ -109,32 +149,27 @@ class ApiClient {
     return response.data;
   }
 
-  // Build endpoints
-  async listBuilds(page = 1, limit = 10, pipelineId?: string): Promise<PaginatedResponse<Build>> {
+  // Pipeline run endpoints
+  async listRuns(page = 1, limit = 10, pipelineId?: string): Promise<PaginatedResponse<Build>> {
     const url = pipelineId 
-      ? `/builds?page=${page}&limit=${limit}&pipelineId=${pipelineId}`
-      : `/builds?page=${page}&limit=${limit}`;
+      ? `/runs?page=${page}&limit=${limit}&pipelineId=${pipelineId}`
+      : `/runs?page=${page}&limit=${limit}`;
     const response = await this.client.get(url);
     return response.data;
   }
 
-  async getBuild(id: string): Promise<Build> {
-    const response = await this.client.get(`/builds/${id}`);
+  async getRun(id: string): Promise<Build> {
+    const response = await this.client.get(`/runs/${id}`);
     return response.data;
   }
 
-  async cancelBuild(id: string): Promise<void> {
-    await this.client.post(`/builds/${id}/cancel`);
-  }
-
-  async getBuildLogs(id: string): Promise<BuildLog[]> {
-    const response = await this.client.get(`/builds/${id}/logs`);
+  async getRunLogs(id: string): Promise<BuildLog[]> {
+    const response = await this.client.get(`/runs/${id}/logs`);
     return response.data;
   }
 
-  async getBuildArtifacts(id: string): Promise<Artifact[]> {
-    const response = await this.client.get(`/builds/${id}/artifacts`);
-    return response.data;
+  async deleteBuild(buildId: string): Promise<void> {
+    await this.client.delete(`/runs/${buildId}`);
   }
 
   // Artifact endpoints

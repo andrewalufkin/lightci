@@ -1,14 +1,14 @@
 import { Router } from 'express';
 import { PipelineController } from '../controllers/pipeline.controller';
-import { EngineService } from '../services/engine.service';
+import { PipelineService } from '../services/pipeline.service';
 import { WorkspaceService } from '../services/workspace.service';
 import { validateSchema } from '../middleware/validation';
 import { authenticate } from '../middleware/auth';
 
 const router = Router();
-const engineService = new EngineService(process.env.CORE_ENGINE_URL || 'localhost:50051');
+const pipelineService = new PipelineService();
 const workspaceService = new WorkspaceService();
-const pipelineController = new PipelineController(engineService, workspaceService);
+const pipelineController = new PipelineController(pipelineService, workspaceService);
 
 // Pipeline schema validation
 const pipelineSchema = {
@@ -81,20 +81,9 @@ router.delete('/:id',
   pipelineController.deletePipeline.bind(pipelineController)
 );
 
-// Trigger pipeline run
+// Trigger pipeline
 router.post('/:id/trigger',
   authenticate,
-  validateSchema({
-    type: 'object',
-    properties: {
-      branch: { type: 'string' },
-      commit: { type: 'string' },
-      parameters: {
-        type: 'object',
-        additionalProperties: { type: 'string' }
-      }
-    }
-  }),
   pipelineController.triggerPipeline.bind(pipelineController)
 );
 

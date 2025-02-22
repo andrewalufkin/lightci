@@ -9,4 +9,5 @@ export interface Step {
   duration?: number;
   exitCode?: number;
   environment?: Record<string, string>;
+  error?: string;
 }

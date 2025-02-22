@@ -4,8 +4,8 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"start": "tsx src/app.ts",
-		"dev": "tsx watch src/app.ts",
+		"start": "tsx src/server.ts",
+		"dev": "tsx watch src/server.ts",
 		"build": "tsc",
 		"test": "jest",
 		"lint": "eslint src/**/*.ts",

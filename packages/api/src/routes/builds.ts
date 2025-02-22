@@ -49,6 +49,12 @@ export class BuildRouter {
       authenticate,
       this.buildController.getBuildArtifacts.bind(this.buildController)
     );
+
+    // Delete build
+    this.router.delete('/:id',
+      authenticate, 
+      this.buildController.deleteBuild.bind(this.buildController)
+    );
   }
 
   setupWebSocket(server: Server) {

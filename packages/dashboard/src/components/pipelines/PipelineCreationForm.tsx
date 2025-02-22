@@ -4,8 +4,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { GitBranch, Settings, Play, Clock, List } from 'lucide-react';
+import { GitBranch, Settings, Play, Clock, List, Package, Plus, Trash2 } from 'lucide-react';
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogCancel, AlertDialogAction } from '@/components/ui/alert-dialog';
+import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
 import {
   DndContext,
   closestCenter,
@@ -33,6 +37,36 @@ interface PipelineStep {
   type: 'source' | 'build' | 'test' | 'deploy' | 'custom';
 }
 
+interface ArtifactPattern {
+  pattern: string;
+  description: string;
+}
+
+interface ArtifactStorage {
+  type: 'local' | 'aws_s3' | 'gcs';
+  config: {
+    bucketName?: string;
+    region?: string;
+    credentialsId?: string;
+  };
+}
+
+interface ArtifactRetention {
+  defaultDays: number;
+  branchPatterns: {
+    pattern: string;
+    days: number;
+  }[];
+  maxStorageGB: number;
+}
+
+interface ArtifactConfig {
+  enabled: boolean;
+  patterns: ArtifactPattern[];
+  storage: ArtifactStorage;
+  retention: ArtifactRetention;
+}
+
 interface PipelineFormData {
   repositoryUrl: string;
   branch: string;
@@ -50,6 +84,7 @@ interface PipelineFormData {
     timezone: string;
   };
   steps: PipelineStep[];
+  artifacts: ArtifactConfig;
 }
 
 interface PipelineApiPayload {
@@ -149,6 +184,25 @@ const templateSteps: Record<string, PipelineStep[]> = {
       type: 'deploy',
     },
   ],
+};
+
+const defaultArtifactPatterns: Record<string, ArtifactPattern[]> = {
+  nodejs: [
+    { pattern: 'dist/**', description: 'Distribution files' },
+    { pattern: 'build/**', description: 'Build output' }
+  ],
+  java: [
+    { pattern: 'target/*.jar', description: 'JAR files' },
+    { pattern: 'target/*.war', description: 'WAR files' }
+  ],
+  python: [
+    { pattern: 'dist/*.whl', description: 'Wheel packages' },
+    { pattern: 'dist/*.tar.gz', description: 'Source distributions' }
+  ],
+  go: [
+    { pattern: 'bin/*', description: 'Binary files' },
+    { pattern: 'build/*', description: 'Build artifacts' }
+  ]
 };
 
 // Add API URL and key configuration
@@ -319,6 +373,28 @@ const PipelineCreationForm = () => {
       timezone: 'UTC',
     },
     steps: defaultSteps,
+    artifacts: {
+      enabled: true,
+      patterns: [],
+      storage: {
+        type: 'local',
+        config: {}
+      },
+      retention: {
+        defaultDays: 30,
+        branchPatterns: [
+          {
+            pattern: 'main',
+            days: 90
+          },
+          {
+            pattern: 'master',
+            days: 90
+          }
+        ],
+        maxStorageGB: 10
+      }
+    }
   });
 
   const [newEnvVar, setNewEnvVar] = useState('');
@@ -340,7 +416,20 @@ const PipelineCreationForm = () => {
   );
 
   const handleInputChange = (field: keyof PipelineFormData, value: string) => {
-    setFormData((prev) => ({ ...prev, [field]: value }));
+    setFormData((prev) => {
+      const newFormData = { ...prev, [field]: value };
+      
+      // If repository URL is being updated, sync it with REPO_URL environment variable
+      if (field === 'repositoryUrl') {
+        const existingEnvVars = newFormData.environmentVariables.filter(env => env.key !== 'REPO_URL');
+        if (value) {
+          existingEnvVars.push({ key: 'REPO_URL', value });
+        }
+        newFormData.environmentVariables = existingEnvVars;
+      }
+      
+      return newFormData;
+    });
   };
 
   const handleTriggerChange = (trigger: keyof PipelineFormData['triggers']) => {
@@ -479,7 +568,8 @@ const PipelineCreationForm = () => {
     };
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
     try {
       setSubmitting(true);
       
@@ -496,6 +586,14 @@ const PipelineCreationForm = () => {
       }
       if (!isValidGitUrl(formData.repositoryUrl)) {
         alert('Please enter a valid Git repository URL (e.g., https://github.com/username/repo.git)');
+        setSubmitting(false);
+        return;
+      }
+
+      // Ensure REPO_URL environment variable is set
+      const hasRepoUrl = formData.environmentVariables.some(env => env.key === 'REPO_URL' && env.value === formData.repositoryUrl);
+      if (!hasRepoUrl) {
+        alert('REPO_URL environment variable is missing or out of sync with repository URL');
         setSubmitting(false);
         return;
       }
@@ -608,325 +706,518 @@ const PipelineCreationForm = () => {
     }
   };
 
+  const handleArtifactChange = (field: keyof ArtifactConfig, value: any) => {
+    setFormData(prev => ({
+      ...prev,
+      artifacts: {
+        ...prev.artifacts,
+        [field]: value
+      }
+    }));
+  };
+
+  const handleStorageConfigChange = (field: keyof ArtifactStorage['config'], value: string) => {
+    setFormData(prev => ({
+      ...prev,
+      artifacts: {
+        ...prev.artifacts,
+        storage: {
+          ...prev.artifacts.storage,
+          config: {
+            ...prev.artifacts.storage.config,
+            [field]: value
+          }
+        }
+      }
+    }));
+  };
+
+  const handleAddPattern = (pattern: string, description: string) => {
+    setFormData(prev => ({
+      ...prev,
+      artifacts: {
+        ...prev.artifacts,
+        patterns: [...prev.artifacts.patterns, { pattern, description }]
+      }
+    }));
+  };
+
+  const handleRemovePattern = (index: number) => {
+    setFormData(prev => ({
+      ...prev,
+      artifacts: {
+        ...prev.artifacts,
+        patterns: prev.artifacts.patterns.filter((_, i) => i !== index)
+      }
+    }));
+  };
+
   return (
-    <div className="max-w-4xl mx-auto p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Create New Pipeline</CardTitle>
-          <CardDescription>Configure your pipeline settings and build steps</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Tabs defaultValue="source" className="space-y-4">
-            <TabsList>
-              <TabsTrigger value="source" className="flex items-center gap-2">
-                <GitBranch size={16} />
-                Source
-              </TabsTrigger>
-              <TabsTrigger value="config" className="flex items-center gap-2">
-                <Settings size={16} />
-                Configuration
-              </TabsTrigger>
-              <TabsTrigger value="triggers" className="flex items-center gap-2">
-                <Play size={16} />
-                Triggers
-              </TabsTrigger>
-              <TabsTrigger value="schedule" className="flex items-center gap-2">
-                <Clock size={16} />
-                Schedule
-              </TabsTrigger>
-              <TabsTrigger value="steps" className="flex items-center gap-2">
-                <List size={16} />
-                Steps
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="source" className="space-y-4">
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Repository URL</label>
-                  <Input
-                    placeholder="https://github.com/username/repo"
-                    value={formData.repositoryUrl}
-                    onChange={(e) => handleInputChange('repositoryUrl', e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Branch</label>
-                  <Input
-                    placeholder="main"
-                    value={formData.branch}
-                    onChange={(e) => handleInputChange('branch', e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Authentication</label>
-                  <select
-                    className="w-full p-2 border rounded"
-                    value={formData.authType}
-                    onChange={(e) => handleInputChange('authType', e.target.value)}
-                  >
-                    <option>SSH Key</option>
-                    <option>Personal Access Token</option>
-                    <option>OAuth</option>
-                  </select>
-                </div>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="config" className="space-y-4">
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Pipeline Name</label>
-                  <Input
-                    placeholder="My Pipeline"
-                    value={formData.name}
-                    onChange={(e) => handleInputChange('name', e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Description</label>
-                  <Input
-                    placeholder="Description of your pipeline"
-                    value={formData.description}
-                    onChange={(e) => handleInputChange('description', e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Environment Variables</label>
-                  <div className="space-y-2">
-                    <Input
-                      placeholder="KEY=value"
-                      value={newEnvVar}
-                      onChange={(e) => setNewEnvVar(e.target.value)}
-                    />
-                    <Button variant="outline" className="w-full" onClick={handleAddEnvVar}>
-                      Add Variable
-                    </Button>
-                  </div>
-                  {formData.environmentVariables.length > 0 && (
-                    <div className="mt-2 space-y-2">
-                      {formData.environmentVariables.map(({ key, value }, index) => (
-                        <div key={index} className="flex items-center justify-between bg-muted p-2 rounded">
-                          <span>{key}={value}</span>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() =>
-                              setFormData((prev) => ({
-                                ...prev,
-                                environmentVariables: prev.environmentVariables.filter((_, i) => i !== index),
-                              }))
-                            }
-                          >
-                            Remove
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="triggers" className="space-y-4">
-              <div className="space-y-2">
-                <label className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    checked={formData.triggers.onPush}
-                    onChange={() => handleTriggerChange('onPush')}
-                  />
-                  <span>On Push</span>
-                </label>
-                <label className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    checked={formData.triggers.onPullRequest}
-                    onChange={() => handleTriggerChange('onPullRequest')}
-                  />
-                  <span>On Pull Request</span>
-                </label>
-                <label className="flex items-center space-x-2">
-                  <input
-                    type="checkbox"
-                    checked={formData.triggers.onTag}
-                    onChange={() => handleTriggerChange('onTag')}
-                  />
-                  <span>On Tag Creation</span>
-                </label>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="schedule" className="space-y-4">
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Cron Schedule</label>
-                  <Input
-                    placeholder="0 0 * * *"
-                    value={formData.schedule.cron}
-                    onChange={(e) =>
-                      setFormData((prev) => ({
-                        ...prev,
-                        schedule: { ...prev.schedule, cron: e.target.value },
-                      }))
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Timezone</label>
-                  <select
-                    className="w-full p-2 border rounded"
-                    value={formData.schedule.timezone}
-                    onChange={(e) =>
-                      setFormData((prev) => ({
-                        ...prev,
-                        schedule: { ...prev.schedule, timezone: e.target.value },
-                      }))
-                    }
-                  >
-                    {TIMEZONES.map(tz => (
-                      <option key={tz} value={tz}>{tz}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="steps" className="space-y-4">
-              <div className="space-y-4">
-                <div className="mb-4">
-                  <label className="block text-sm font-medium mb-2">Quick Start Templates</label>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                    <Card 
-                      className="cursor-pointer hover:border-blue-500 transition-all"
-                      onClick={() => handleTemplateSelect('nodejs')}
-                    >
-                      <CardHeader className="p-4">
-                        <CardTitle className="text-sm">Node.js Build</CardTitle>
-                        <CardDescription className="text-xs">Build, test, and deploy Node.js apps</CardDescription>
-                      </CardHeader>
-                    </Card>
-                    <Card 
-                      className="cursor-pointer hover:border-blue-500 transition-all"
-                      onClick={() => handleTemplateSelect('rust')}
-                    >
-                      <CardHeader className="p-4">
-                        <CardTitle className="text-sm">Rust Project</CardTitle>
-                        <CardDescription className="text-xs">Cargo build, test, and binary creation</CardDescription>
-                      </CardHeader>
-                    </Card>
-                    <Card 
-                      className="cursor-pointer hover:border-blue-500 transition-all"
-                      onClick={() => handleTemplateSelect('docker')}
-                    >
-                      <CardHeader className="p-4">
-                        <CardTitle className="text-sm">Docker Build</CardTitle>
-                        <CardDescription className="text-xs">Build and push Docker images</CardDescription>
-                      </CardHeader>
-                    </Card>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex justify-between items-center mb-4">
-                    <label className="block text-sm font-medium">Pipeline Steps</label>
-                    <Button variant="outline" size="sm" onClick={handleAddStep}>Add Step</Button>
-                  </div>
-                  
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                  >
-                    <SortableContext
-                      items={formData.steps.map(step => step.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      <div className="space-y-4">
-                        {formData.steps.map((step, index) => (
-                          <SortableStepItem
-                            key={step.id}
-                            step={step}
-                            index={index}
-                            onEdit={handleEditStep}
-                            onDelete={handleRemoveStep}
-                            environmentVariables={formData.environmentVariables}
-                          />
-                        ))}
-                      </div>
-                    </SortableContext>
-                  </DndContext>
-                </div>
-              </div>
-            </TabsContent>
-          </Tabs>
-
-          <AlertDialog open={isStepDialogOpen} onOpenChange={setIsStepDialogOpen}>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>{editingStep ? 'Edit Step' : 'Add Step'}</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Configure your pipeline step details
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <div className="space-y-4 py-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Step Type</label>
-                  <select
-                    className="w-full p-2 border rounded"
-                    value={stepForm.type}
-                    onChange={(e) => setStepForm(prev => ({ ...prev, type: e.target.value as PipelineStep['type'] }))}
-                  >
-                    <option value="build">Build</option>
-                    <option value="test">Test</option>
-                    <option value="deploy">Deploy</option>
-                    <option value="custom">Custom</option>
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Name</label>
-                  <Input
-                    value={stepForm.name}
-                    onChange={(e) => setStepForm(prev => ({ ...prev, name: e.target.value }))}
-                    placeholder="Step name"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Description</label>
-                  <Input
-                    value={stepForm.description}
-                    onChange={(e) => setStepForm(prev => ({ ...prev, description: e.target.value }))}
-                    placeholder="Step description"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Command</label>
-                  <Input
-                    value={stepForm.command}
-                    onChange={(e) => setStepForm(prev => ({ ...prev, command: e.target.value }))}
-                    placeholder="Command to execute"
-                  />
-                </div>
-              </div>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={handleStepSubmit}>
-                  {editingStep ? 'Save Changes' : 'Add Step'}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-
-          <div className="mt-6 flex justify-end space-x-2">
-            <Button variant="outline" onClick={() => navigate('/')} disabled={submitting}>
+    <div className="container mx-auto py-6">
+      <form onSubmit={handleSubmit} className="space-y-8">
+        <div className="flex justify-between items-center">
+          <h1 className="text-3xl font-bold">Create Pipeline</h1>
+          <div className="space-x-2">
+            <Button variant="outline" type="button" onClick={() => navigate(-1)}>
               Cancel
             </Button>
-            <Button onClick={handleSubmit} disabled={submitting}>
-              {submitting ? 'Creating Pipeline...' : 'Create Pipeline'}
+            <Button type="submit" disabled={submitting}>
+              {submitting ? 'Creating...' : 'Create Pipeline'}
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+
+        <Tabs defaultValue="source" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="source" className="flex items-center gap-2">
+              <GitBranch size={16} />
+              Source
+            </TabsTrigger>
+            <TabsTrigger value="config" className="flex items-center gap-2">
+              <Settings size={16} />
+              Configuration
+            </TabsTrigger>
+            <TabsTrigger value="triggers" className="flex items-center gap-2">
+              <Play size={16} />
+              Triggers
+            </TabsTrigger>
+            <TabsTrigger value="schedule" className="flex items-center gap-2">
+              <Clock size={16} />
+              Schedule
+            </TabsTrigger>
+            <TabsTrigger value="steps" className="flex items-center gap-2">
+              <List size={16} />
+              Steps
+            </TabsTrigger>
+            <TabsTrigger value="artifacts" className="flex items-center gap-2">
+              <Package size={16} />
+              Artifacts
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="source" className="space-y-4">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Repository URL</label>
+                <Input
+                  placeholder="https://github.com/username/repo"
+                  value={formData.repositoryUrl}
+                  onChange={(e) => handleInputChange('repositoryUrl', e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Branch</label>
+                <Input
+                  placeholder="main"
+                  value={formData.branch}
+                  onChange={(e) => handleInputChange('branch', e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Authentication</label>
+                <select
+                  className="w-full p-2 border rounded"
+                  value={formData.authType}
+                  onChange={(e) => handleInputChange('authType', e.target.value)}
+                >
+                  <option>SSH Key</option>
+                  <option>Personal Access Token</option>
+                  <option>OAuth</option>
+                </select>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="config" className="space-y-4">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Pipeline Name</label>
+                <Input
+                  placeholder="My Pipeline"
+                  value={formData.name}
+                  onChange={(e) => handleInputChange('name', e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Description</label>
+                <Input
+                  placeholder="Description of your pipeline"
+                  value={formData.description}
+                  onChange={(e) => handleInputChange('description', e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Environment Variables</label>
+                <div className="space-y-2">
+                  <Input
+                    placeholder="KEY=value"
+                    value={newEnvVar}
+                    onChange={(e) => setNewEnvVar(e.target.value)}
+                  />
+                  <Button variant="outline" className="w-full" onClick={handleAddEnvVar}>
+                    Add Variable
+                  </Button>
+                </div>
+                {formData.environmentVariables.length > 0 && (
+                  <div className="mt-2 space-y-2">
+                    {formData.environmentVariables.map(({ key, value }, index) => (
+                      <div key={index} className="flex items-center justify-between bg-muted p-2 rounded">
+                        <span>{key}={value}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            setFormData((prev) => ({
+                              ...prev,
+                              environmentVariables: prev.environmentVariables.filter((_, i) => i !== index),
+                            }))
+                          }
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="triggers" className="space-y-4">
+            <div className="space-y-2">
+              <label className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  checked={formData.triggers.onPush}
+                  onChange={() => handleTriggerChange('onPush')}
+                />
+                <span>On Push</span>
+              </label>
+              <label className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  checked={formData.triggers.onPullRequest}
+                  onChange={() => handleTriggerChange('onPullRequest')}
+                />
+                <span>On Pull Request</span>
+              </label>
+              <label className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  checked={formData.triggers.onTag}
+                  onChange={() => handleTriggerChange('onTag')}
+                />
+                <span>On Tag Creation</span>
+              </label>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="schedule" className="space-y-4">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Cron Schedule</label>
+                <Input
+                  placeholder="0 0 * * *"
+                  value={formData.schedule.cron}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      schedule: { ...prev.schedule, cron: e.target.value },
+                    }))
+                  }
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Timezone</label>
+                <select
+                  className="w-full p-2 border rounded"
+                  value={formData.schedule.timezone}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      schedule: { ...prev.schedule, timezone: e.target.value },
+                    }))
+                  }
+                >
+                  {TIMEZONES.map(tz => (
+                    <option key={tz} value={tz}>{tz}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="steps" className="space-y-4">
+            <div className="space-y-4">
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-2">Quick Start Templates</label>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  <Card 
+                    className="cursor-pointer hover:border-blue-500 transition-all"
+                    onClick={() => handleTemplateSelect('nodejs')}
+                  >
+                    <CardHeader className="p-4">
+                      <CardTitle className="text-sm">Node.js Build</CardTitle>
+                      <CardDescription className="text-xs">Build, test, and deploy Node.js apps</CardDescription>
+                    </CardHeader>
+                  </Card>
+                  <Card 
+                    className="cursor-pointer hover:border-blue-500 transition-all"
+                    onClick={() => handleTemplateSelect('rust')}
+                  >
+                    <CardHeader className="p-4">
+                      <CardTitle className="text-sm">Rust Project</CardTitle>
+                      <CardDescription className="text-xs">Cargo build, test, and binary creation</CardDescription>
+                    </CardHeader>
+                  </Card>
+                  <Card 
+                    className="cursor-pointer hover:border-blue-500 transition-all"
+                    onClick={() => handleTemplateSelect('docker')}
+                  >
+                    <CardHeader className="p-4">
+                      <CardTitle className="text-sm">Docker Build</CardTitle>
+                      <CardDescription className="text-xs">Build and push Docker images</CardDescription>
+                    </CardHeader>
+                  </Card>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between items-center mb-4">
+                  <label className="block text-sm font-medium">Pipeline Steps</label>
+                  <Button variant="outline" size="sm" onClick={handleAddStep}>Add Step</Button>
+                </div>
+                
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleDragEnd}
+                >
+                  <SortableContext
+                    items={formData.steps.map(step => step.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <div className="space-y-4">
+                      {formData.steps.map((step, index) => (
+                        <SortableStepItem
+                          key={step.id}
+                          step={step}
+                          index={index}
+                          onEdit={handleEditStep}
+                          onDelete={handleRemoveStep}
+                          environmentVariables={formData.environmentVariables}
+                        />
+                      ))}
+                    </div>
+                  </SortableContext>
+                </DndContext>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="artifacts" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Artifact Configuration</CardTitle>
+                <CardDescription>Configure how build artifacts are stored and managed</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>Enable Artifact Storage</Label>
+                    <div className="text-sm text-muted-foreground">Store and manage build artifacts</div>
+                  </div>
+                  <Switch
+                    checked={formData.artifacts.enabled}
+                    onCheckedChange={(checked: boolean) => handleArtifactChange('enabled', checked)}
+                  />
+                </div>
+
+                {formData.artifacts.enabled && (
+                  <>
+                    <Separator />
+                    
+                    <div className="space-y-4">
+                      <div>
+                        <Label>Storage Provider</Label>
+                        <Select
+                          value={formData.artifacts.storage.type}
+                          onValueChange={(value: ArtifactStorage['type']) => 
+                            handleArtifactChange('storage', { ...formData.artifacts.storage, type: value })}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select storage provider" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="local">Local Storage</SelectItem>
+                            <SelectItem value="aws_s3">AWS S3</SelectItem>
+                            <SelectItem value="gcs">Google Cloud Storage</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {formData.artifacts.storage.type !== 'local' && (
+                        <div className="space-y-4">
+                          <div>
+                            <Label>Bucket Name</Label>
+                            <Input
+                              value={formData.artifacts.storage.config.bucketName || ''}
+                              onChange={(e) => handleStorageConfigChange('bucketName', e.target.value)}
+                              placeholder="my-artifacts-bucket"
+                            />
+                          </div>
+                          <div>
+                            <Label>Region</Label>
+                            <Input
+                              value={formData.artifacts.storage.config.region || ''}
+                              onChange={(e) => handleStorageConfigChange('region', e.target.value)}
+                              placeholder="us-east-1"
+                            />
+                          </div>
+                          <div>
+                            <Label>Credentials ID</Label>
+                            <Input
+                              value={formData.artifacts.storage.config.credentialsId || ''}
+                              onChange={(e) => handleStorageConfigChange('credentialsId', e.target.value)}
+                              placeholder="my-cloud-credentials"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      <Separator />
+
+                      <div className="space-y-4">
+                        <Label>Artifact Patterns</Label>
+                        <div className="grid grid-cols-2 gap-4">
+                          {Object.entries(defaultArtifactPatterns).map(([type, patterns]) => (
+                            <Card key={type} className="p-4">
+                              <CardTitle className="text-sm mb-2">{type.charAt(0).toUpperCase() + type.slice(1)}</CardTitle>
+                              {patterns.map((pattern) => (
+                                <Button
+                                  key={pattern.pattern}
+                                  variant="outline"
+                                  className="w-full mb-2 justify-start"
+                                  onClick={() => handleAddPattern(pattern.pattern, pattern.description)}
+                                >
+                                  <Plus className="w-4 h-4 mr-2" />
+                                  {pattern.pattern}
+                                </Button>
+                              ))}
+                            </Card>
+                          ))}
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label>Current Patterns</Label>
+                          {formData.artifacts.patterns.map((pattern, index) => (
+                            <div key={index} className="flex items-center gap-2">
+                              <Input value={pattern.pattern} readOnly />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleRemovePattern(index)}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <Separator />
+
+                      <div className="space-y-4">
+                        <Label>Retention Settings</Label>
+                        <div>
+                          <Label>Default Retention Period (days)</Label>
+                          <Input
+                            type="number"
+                            value={formData.artifacts.retention.defaultDays}
+                            onChange={(e) => handleArtifactChange('retention', {
+                              ...formData.artifacts.retention,
+                              defaultDays: parseInt(e.target.value) || 0
+                            })}
+                            min="1"
+                          />
+                        </div>
+                        <div>
+                          <Label>Maximum Storage (GB)</Label>
+                          <Input
+                            type="number"
+                            value={formData.artifacts.retention.maxStorageGB}
+                            onChange={(e) => handleArtifactChange('retention', {
+                              ...formData.artifacts.retention,
+                              maxStorageGB: parseInt(e.target.value) || 0
+                            })}
+                            min="1"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+
+        <AlertDialog open={isStepDialogOpen} onOpenChange={setIsStepDialogOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{editingStep ? 'Edit Step' : 'Add Step'}</AlertDialogTitle>
+              <AlertDialogDescription>
+                Configure your pipeline step details
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Step Type</label>
+                <select
+                  className="w-full p-2 border rounded"
+                  value={stepForm.type}
+                  onChange={(e) => setStepForm(prev => ({ ...prev, type: e.target.value as PipelineStep['type'] }))}
+                >
+                  <option value="build">Build</option>
+                  <option value="test">Test</option>
+                  <option value="deploy">Deploy</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Name</label>
+                <Input
+                  value={stepForm.name}
+                  onChange={(e) => setStepForm(prev => ({ ...prev, name: e.target.value }))}
+                  placeholder="Step name"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Description</label>
+                <Input
+                  value={stepForm.description}
+                  onChange={(e) => setStepForm(prev => ({ ...prev, description: e.target.value }))}
+                  placeholder="Step description"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Command</label>
+                <Input
+                  value={stepForm.command}
+                  onChange={(e) => setStepForm(prev => ({ ...prev, command: e.target.value }))}
+                  placeholder="Command to execute"
+                />
+              </div>
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={handleStepSubmit}>
+                {editingStep ? 'Save Changes' : 'Add Step'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </form>
     </div>
   );
 };

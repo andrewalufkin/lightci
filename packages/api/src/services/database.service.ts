@@ -1,169 +1,133 @@
-import { PrismaClient, Pipeline, Build, BuildLog, Artifact } from '@prisma/client';
-import { DatabaseService as PrismaService } from '../config/database';
-import { PaginationOptions, PaginatedResult } from '../models/types';
-import { NotFoundError } from '../utils/errors';
+import { PrismaClient } from '@prisma/client';
+import { PaginatedResult } from '../models/types';
+import { Step } from '../models/Step';
+
+const prisma = new PrismaClient();
+
+export interface PipelineStep {
+  id: string;
+  name: string;
+  command: string;
+  timeout?: number;
+  environment?: Record<string, string>;
+}
+
+export interface DatabasePipeline {
+  id: string;
+  name: string;
+  description?: string;
+  repository: string;
+  defaultBranch: string;
+  steps: PipelineStep[];
+  triggers?: Record<string, any>;
+  schedule?: Record<string, any>;
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 export class DatabaseService {
-  private prisma: PrismaClient;
-
-  constructor() {
-    this.prisma = PrismaService.getInstance().getClient();
+  transformPipelineFromDb(dbPipeline: any): DatabasePipeline {
+    return {
+      id: dbPipeline.id,
+      name: dbPipeline.name,
+      repository: dbPipeline.repository,
+      description: dbPipeline.description,
+      defaultBranch: dbPipeline.defaultBranch,
+      steps: typeof dbPipeline.steps === 'string' ? JSON.parse(dbPipeline.steps) : dbPipeline.steps,
+      triggers: typeof dbPipeline.triggers === 'string' ? JSON.parse(dbPipeline.triggers) : dbPipeline.triggers,
+      schedule: typeof dbPipeline.schedule === 'string' ? JSON.parse(dbPipeline.schedule) : dbPipeline.schedule,
+      status: dbPipeline.status,
+      createdAt: dbPipeline.createdAt,
+      updatedAt: dbPipeline.updatedAt
+    };
   }
 
-  // Pipeline operations
-  async createPipeline(data: Omit<Pipeline, 'id' | 'createdAt' | 'updatedAt'>): Promise<Pipeline> {
-    return this.prisma.pipeline.create({
-      data: {
-        name: data.name,
-        repository: data.repository,
-        defaultBranch: data.defaultBranch,
-        workspaceId: data.workspaceId,
-        status: data.status,
-        description: data.description
-      }
-    });
-  }
+  async listPipelines(options: { page: number; limit: number; filter?: string; sort?: string; }): Promise<PaginatedResult<DatabasePipeline>> {
+    const { page, limit, filter, sort } = options;
 
-  async getPipeline(id: string): Promise<Pipeline | null> {
-    return this.prisma.pipeline.findUnique({
-      where: { id }
-    });
-  }
-
-  async listPipelines(options: PaginationOptions): Promise<PaginatedResult<Pipeline>> {
-    const { page, limit, filter } = options;
-    const skip = (page - 1) * limit;
-
+    // Build where clause for filtering
     const where = filter ? {
       OR: [
-        { name: { contains: filter } },
-        { repository: { contains: filter } }
+        { name: { contains: filter, mode: 'insensitive' } },
+        { repository: { contains: filter, mode: 'insensitive' } },
+        { description: { contains: filter, mode: 'insensitive' } }
       ]
-    } : undefined;
+    } : {};
 
-    const [items, total] = await Promise.all([
-      this.prisma.pipeline.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' }
-      }),
-      this.prisma.pipeline.count({ where })
-    ]);
+    // Build orderBy clause for sorting
+    let orderBy = {};
+    if (sort) {
+      const [field, order] = sort.split(':');
+      orderBy = { [field]: order };
+    }
+
+    // Get total count for pagination
+    const total = await prisma.pipeline.count({ where });
+
+    // Get paginated results
+    const items = await prisma.pipeline.findMany({
+      where,
+      orderBy,
+      skip: (page - 1) * limit,
+      take: limit
+    });
 
     return {
-      items,
+      items: items.map(this.transformPipelineFromDb),
       total,
       page,
       limit
     };
   }
 
-  async updatePipeline(id: string, data: Partial<Pipeline>): Promise<Pipeline> {
-    return this.prisma.pipeline.update({
-      where: { id },
-      data
+  async createPipeline(pipeline: Omit<DatabasePipeline, 'id' | 'status' | 'createdAt' | 'updatedAt'>): Promise<DatabasePipeline> {
+    const created = await prisma.pipeline.create({
+      data: {
+        name: pipeline.name,
+        repository: pipeline.repository,
+        description: pipeline.description,
+        defaultBranch: pipeline.defaultBranch,
+        steps: pipeline.steps,
+        triggers: pipeline.triggers,
+        schedule: pipeline.schedule,
+        status: 'created'
+      }
     });
+    return this.transformPipelineFromDb(created);
+  }
+
+  async getPipeline(id: string): Promise<DatabasePipeline | null> {
+    const pipeline = await prisma.pipeline.findUnique({
+      where: { id }
+    });
+    return pipeline ? this.transformPipelineFromDb(pipeline) : null;
+  }
+
+  async updatePipeline(id: string, pipeline: Partial<Omit<DatabasePipeline, 'id' | 'createdAt' | 'updatedAt'>>): Promise<DatabasePipeline> {
+    const data: any = {};
+
+    if (pipeline.name) data.name = pipeline.name;
+    if (pipeline.description !== undefined) data.description = pipeline.description;
+    if (pipeline.repository) data.repository = pipeline.repository;
+    if (pipeline.defaultBranch) data.defaultBranch = pipeline.defaultBranch;
+    if (pipeline.status) data.status = pipeline.status;
+    if (pipeline.steps) data.steps = pipeline.steps;
+    if (pipeline.triggers) data.triggers = pipeline.triggers;
+    if (pipeline.schedule) data.schedule = pipeline.schedule;
+
+    const updated = await prisma.pipeline.update({
+      where: { id },
+      data,
+    });
+    return this.transformPipelineFromDb(updated);
   }
 
   async deletePipeline(id: string): Promise<void> {
-    await this.prisma.pipeline.delete({
+    await prisma.pipeline.delete({
       where: { id }
     });
   }
+}
 
-  // Build operations
-  async createBuild(data: Omit<Build, 'id' | 'createdAt' | 'updatedAt'>): Promise<Build> {
-    return this.prisma.build.create({
-      data
-    });
-  }
-
-  async getBuild(id: string): Promise<Build | null> {
-    return this.prisma.build.findUnique({
-      where: { id },
-      include: {
-        logs: true,
-        artifacts: true
-      }
-    });
-  }
-
-  async listBuilds(options: PaginationOptions & { pipelineId?: string }): Promise<PaginatedResult<Build>> {
-    const { page, limit, pipelineId } = options;
-    const skip = (page - 1) * limit;
-
-    const where = pipelineId ? { pipelineId } : undefined;
-
-    const [items, total] = await Promise.all([
-      this.prisma.build.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          logs: true,
-          artifacts: true
-        }
-      }),
-      this.prisma.build.count({ where })
-    ]);
-
-    return {
-      items,
-      total,
-      page,
-      limit
-    };
-  }
-
-  async updateBuild(id: string, data: Partial<Build>): Promise<Build> {
-    return this.prisma.build.update({
-      where: { id },
-      data,
-      include: {
-        logs: true,
-        artifacts: true
-      }
-    });
-  }
-
-  // BuildLog operations
-  async createBuildLog(data: Omit<BuildLog, 'id' | 'timestamp'>): Promise<BuildLog> {
-    return this.prisma.buildLog.create({
-      data
-    });
-  }
-
-  async getBuildLogs(buildId: string): Promise<BuildLog[]> {
-    return this.prisma.buildLog.findMany({
-      where: { buildId },
-      orderBy: { timestamp: 'asc' }
-    });
-  }
-
-  // Artifact operations
-  async createArtifact(data: Omit<Artifact, 'id' | 'createdAt'>): Promise<Artifact> {
-    return this.prisma.artifact.create({
-      data
-    });
-  }
-
-  async getArtifact(id: string): Promise<Artifact | null> {
-    return this.prisma.artifact.findUnique({
-      where: { id }
-    });
-  }
-
-  async getBuildArtifacts(buildId: string): Promise<Artifact[]> {
-    return this.prisma.artifact.findMany({
-      where: { buildId }
-    });
-  }
-
-  async deleteArtifact(id: string): Promise<void> {
-    await this.prisma.artifact.delete({
-      where: { id }
-    });
-  }
-} 
+export const db = new DatabaseService();

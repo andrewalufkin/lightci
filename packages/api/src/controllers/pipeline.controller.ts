@@ -1,22 +1,26 @@
 import { Request, Response } from 'express';
-import { EngineService } from '../services/engine.service';
+import { PipelineService } from '../services/pipeline.service';
 import { WorkspaceService } from '../services/workspace.service';
+import { PipelineRunnerService } from '../services/pipeline-runner.service';
 import { Pipeline, PipelineConfig } from '../models/Pipeline';
-import { BuildStatus } from '../models/types';
 import { ValidationError, NotFoundError } from '../utils/errors';
 
 export class PipelineController {
+  private pipelineRunnerService: PipelineRunnerService;
+
   constructor(
-    private engineService: EngineService,
+    private pipelineService: PipelineService,
     private workspaceService: WorkspaceService
-  ) {}
+  ) {
+    this.pipelineRunnerService = new PipelineRunnerService(workspaceService);
+  }
 
   async listPipelines(req: Request, res: Response) {
     try {
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 20;
       
-      const pipelines = await this.engineService.listPipelines({
+      const pipelines = await this.pipelineService.listPipelines({
         page,
         limit,
         filter: req.query.filter as string,
@@ -58,11 +62,8 @@ export class PipelineController {
         repository: config.repository
       });
 
-      // Initialize pipeline in the engine
-      const pipeline = await this.engineService.createPipeline({
-        ...config,
-        workspaceId: workspace.id
-      });
+      // Initialize pipeline
+      const pipeline = await this.pipelineService.createPipeline(config);
 
       res.status(201).json(pipeline);
     } catch (error) {
@@ -80,7 +81,7 @@ export class PipelineController {
       const { id } = req.params;
       console.log(`[Pipeline] Fetching pipeline with ID: ${id}`);
       
-      const pipeline = await this.engineService.getPipeline(id);
+      const pipeline = await this.pipelineService.getPipeline(id);
       console.log(`[Pipeline] Pipeline fetch result:`, pipeline ? 'Found' : 'Not found');
       
       if (!pipeline) {
@@ -90,15 +91,7 @@ export class PipelineController {
         );
       }
 
-      // Get latest builds
-      console.log(`[Pipeline] Fetching latest builds for pipeline: ${id}`);
-      const latestBuilds = await this.engineService.getLatestBuilds(id, 5);
-      console.log(`[Pipeline] Found ${latestBuilds.length} latest builds`);
-      
-      res.json({
-        ...pipeline,
-        latestBuilds
-      });
+      res.json(pipeline);
     } catch (error) {
       console.error('[Pipeline] Error in getPipeline:', error);
       if (error instanceof NotFoundError) {
@@ -127,13 +120,13 @@ export class PipelineController {
       const config: PipelineConfig = req.body;
 
       // Check if pipeline exists
-      const existingPipeline = await this.engineService.getPipeline(id);
+      const existingPipeline = await this.pipelineService.getPipeline(id);
       if (!existingPipeline) {
         throw new NotFoundError('Pipeline not found');
       }
 
-      // Update pipeline in the engine
-      const pipeline = await this.engineService.updatePipeline(id, config);
+      // Update pipeline
+      const pipeline = await this.pipelineService.updatePipeline(id, config);
       res.json(pipeline);
     } catch (error) {
       if (error instanceof NotFoundError) {
@@ -151,14 +144,13 @@ export class PipelineController {
       const { id } = req.params;
 
       // Check if pipeline exists
-      const pipeline = await this.engineService.getPipeline(id);
+      const pipeline = await this.pipelineService.getPipeline(id);
       if (!pipeline) {
         throw new NotFoundError('Pipeline not found');
       }
 
-      // Delete pipeline and its workspace
-      await this.engineService.deletePipeline(id);
-      await this.workspaceService.deleteWorkspace(pipeline.workspaceId);
+      // Delete pipeline
+      await this.pipelineService.deletePipeline(id);
 
       res.status(204).send();
     } catch (error) {
@@ -173,35 +165,31 @@ export class PipelineController {
   async triggerPipeline(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const { branch, commit, parameters } = req.body;
+      const { branch, commit } = req.body;
 
-      // Validate pipeline exists
-      const pipeline = await this.engineService.getPipeline(id);
+      // Get pipeline
+      const pipeline = await this.pipelineService.getPipeline(id);
       if (!pipeline) {
         throw new NotFoundError('Pipeline not found');
       }
 
-      // Trigger new build
-      const build = await this.engineService.triggerBuild(id, {
-        branch: branch || pipeline.defaultBranch,
-        commit: commit || 'HEAD',
-        parameters: parameters || {}
-      });
+      // Use default branch if none specified
+      const targetBranch = branch || pipeline.defaultBranch;
+
+      // Trigger pipeline run
+      const runId = await this.pipelineRunnerService.runPipeline(id, targetBranch, commit);
 
       res.json({
-        buildId: build.id,
-        status: build.status,
-        message: `Build ${build.id} triggered successfully`
+        message: 'Pipeline triggered successfully',
+        runId,
+        status: 'running'
       });
     } catch (error) {
-      console.error('[Pipeline] Error triggering pipeline:', error);
       if (error instanceof NotFoundError) {
         res.status(404).json({ error: error.message });
       } else {
-        res.status(500).json({ 
-          error: 'Failed to trigger pipeline',
-          message: error.message || 'An unexpected error occurred while triggering the pipeline'
-        });
+        console.error('Failed to trigger pipeline:', error);
+        res.status(500).json({ error: 'Failed to trigger pipeline' });
       }
     }
   }

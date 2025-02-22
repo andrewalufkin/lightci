@@ -2,18 +2,15 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "NodeNext",
-    "lib": ["ES2020", "ES2022"],
-    "outDir": "./dist",
-    "rootDir": "./src",
-    "strict": true,
+    "moduleResolution": "NodeNext",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
+    "strict": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "moduleResolution": "NodeNext",
-    "resolveJsonModule": true,
-    "declaration": true,
-    "sourceMap": true
+    "outDir": "dist",
+    "rootDir": "src",
+    "resolveJsonModule": true
   },
   "ts-node": {
     "esm": true,

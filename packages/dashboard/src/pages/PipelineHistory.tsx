@@ -3,18 +3,13 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Trash2, ChevronDown } from 'lucide-react';
+import { api, Build as APIBuild } from '../services/api';
+import { toast } from 'sonner';
+import { PipelineSteps } from '@/components/pipelines/PipelineSteps';
 
-interface Build {
-  id: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' |
-          'PIPELINE_STATUS_PENDING' | 'PIPELINE_STATUS_RUNNING' | 'PIPELINE_STATUS_COMPLETED' | 'PIPELINE_STATUS_FAILED';
-  branch: string;
-  commit: string;
-  createdAt: string;
-  startedAt?: string;
-  completedAt?: string;
-  parameters: Record<string, string>;
+interface Build extends APIBuild {
+  parameters?: Record<string, string>;
 }
 
 interface Pipeline {
@@ -33,9 +28,6 @@ interface PaginatedResponse {
   };
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-const API_KEY = import.meta.env.VITE_API_KEY;
-
 const PipelineHistory: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -46,6 +38,7 @@ const PipelineHistory: React.FC = () => {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalBuilds, setTotalBuilds] = useState(0);
+  const [expandedBuilds, setExpandedBuilds] = useState<Set<string>>(new Set());
   const limit = 10;
 
   console.log('PipelineHistory rendering with state:', {
@@ -61,21 +54,7 @@ const PipelineHistory: React.FC = () => {
   useEffect(() => {
     const fetchPipeline = async () => {
       try {
-        const response = await fetch(
-          `${API_URL}/api/pipelines/${id}`,
-          {
-            headers: {
-              'Accept': 'application/json',
-              'x-api-key': API_KEY,
-            },
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error('Failed to fetch pipeline details');
-        }
-
-        const data = await response.json();
+        const data = await api.getPipeline(id!);
         setPipeline(data);
       } catch (err) {
         console.error('Error fetching pipeline:', err);
@@ -90,35 +69,17 @@ const PipelineHistory: React.FC = () => {
     const fetchBuilds = async () => {
       try {
         setLoading(true);
-        console.log('Fetching builds for pipeline:', id);
-        const response = await fetch(
-          `${API_URL}/api/builds?pipelineId=${id}&page=${page}&limit=${limit}`,
-          {
-            headers: {
-              'Accept': 'application/json',
-              'x-api-key': API_KEY,
-            },
-          }
-        );
-
-        if (!response.ok) {
-          const errorData = await response.json();
-          console.error('Error response:', errorData);
-          throw new Error(errorData.error || 'Failed to fetch builds');
-        }
-
-        const responseText = await response.text();
-        console.log('Raw response:', responseText);
+        console.log('Fetching runs for pipeline:', id);
         
-        const data: PaginatedResponse = JSON.parse(responseText);
-        console.log('Parsed data:', data);
+        const data = await api.listRuns(page, limit, id);
+        console.log('Fetched data:', data);
         
         setBuilds(data.data);
         setTotalBuilds(data.pagination.total);
         setTotalPages(Math.ceil(data.pagination.total / limit));
       } catch (err) {
         setError(err instanceof Error ? err.message : 'An error occurred');
-        console.error('Error fetching builds:', err);
+        console.error('Error fetching runs:', err);
       } finally {
         setLoading(false);
       }
@@ -151,6 +112,32 @@ const PipelineHistory: React.FC = () => {
       return 'bg-gray-100 text-gray-800';
     }
     return 'bg-yellow-100 text-yellow-800';
+  };
+
+  const handleDeleteBuild = async (buildId: string) => {
+    try {
+      await api.deleteBuild(buildId);
+      setBuilds(builds.filter(build => build.id !== buildId));
+      toast.success('Build deleted successfully');
+    } catch (error) {
+      console.error('Error deleting build:', error);
+      toast.error('Failed to delete build');
+    }
+  };
+
+  const toggleBuildExpanded = (buildId: string) => {
+    setExpandedBuilds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(buildId)) {
+        newSet.delete(buildId);
+      } else {
+        newSet.add(buildId);
+        // Log the build steps when expanding
+        const build = builds.find(b => b.id === buildId);
+        console.log('Build steps for build', buildId, ':', build?.stepResults);
+      }
+      return newSet;
+    });
   };
 
   if (loading && builds.length === 0) {
@@ -208,9 +195,11 @@ const PipelineHistory: React.FC = () => {
                     <span className="text-sm text-gray-500">
                       Branch: {build.branch}
                     </span>
-                    <span className="text-sm text-gray-500">
-                      Commit: {build.commit.slice(0, 7)}
-                    </span>
+                    {build.commit && (
+                      <span className="text-sm text-gray-500">
+                        Commit: {build.commit.slice(0, 7)}
+                      </span>
+                    )}
                   </div>
                   <div className="text-sm text-gray-500">
                     Started: {new Date(build.startedAt || build.createdAt).toLocaleString()}
@@ -220,9 +209,9 @@ const PipelineHistory: React.FC = () => {
                       </span>
                     )}
                   </div>
-                  {Object.keys(build.parameters).length > 0 && (
+                  {Object.keys(build.parameters || {}).length > 0 && (
                     <div className="text-sm text-gray-500 mt-2">
-                      Parameters: {Object.entries(build.parameters).map(([key, value]) => (
+                      Parameters: {Object.entries(build.parameters || {}).map(([key, value]) => (
                         <span key={key} className="mr-2">
                           {key}={value}
                         </span>
@@ -230,7 +219,44 @@ const PipelineHistory: React.FC = () => {
                     </div>
                   )}
                 </div>
+                <div className="flex items-center space-x-2">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => toggleBuildExpanded(build.id)}
+                    className="text-gray-500 hover:text-gray-700"
+                  >
+                    <ChevronDown 
+                      className={`w-5 h-5 transform transition-transform ${
+                        expandedBuilds.has(build.id) ? 'rotate-180' : ''
+                      }`}
+                    />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleDeleteBuild(build.id)}
+                    className="text-gray-500 hover:text-red-600"
+                  >
+                    <Trash2 className="w-5 h-5" />
+                  </Button>
+                </div>
               </div>
+              
+              {expandedBuilds.has(build.id) && build.stepResults && (
+                <div className="mt-4">
+                  <PipelineSteps 
+                    steps={build.stepResults.map(step => ({
+                      name: step.name,
+                      status: step.status,
+                      duration: step.duration ? `${Math.floor(step.duration / 60)}m ${step.duration % 60}s` : undefined,
+                      logs: step.output ? [step.output] : undefined,
+                      error: step.error
+                    }))} 
+                    expanded={true}
+                  />
+                </div>
+              )}
             </CardContent>
           </Card>
         ))}

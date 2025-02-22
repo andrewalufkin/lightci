@@ -2,50 +2,52 @@ import React, { useEffect, useState } from 'react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Link, useNavigate } from 'react-router-dom';
-import { Play, Settings, GitBranch, History, ChevronDown, ChevronUp } from 'lucide-react';
+import { Play, Settings, GitBranch, History, ChevronDown, ChevronUp, Clock } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { PipelineSteps } from '@/components/pipelines/PipelineSteps';
+import { api, Pipeline } from '@/services/api';
 
-interface Pipeline {
-  id: string;
-  name: string;
-  repository: string;
-  defaultBranch: string;
-  description?: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 
-          'PIPELINE_STATUS_PENDING' | 'PIPELINE_STATUS_RUNNING' | 'PIPELINE_STATUS_COMPLETED' | 'PIPELINE_STATUS_FAILED';
-  createdAt: string;
-  updatedAt: string;
-  steps: {
-    name: string;
-    status: 'pending' | 'running' | 'completed' | 'failed';
-    duration?: string;
-    logs?: string[];
-  }[];
-}
+const RunningTimer: React.FC<{ startTime: number }> = ({ startTime }) => {
+  const [elapsedTime, setElapsedTime] = useState('0:00');
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-const API_KEY = import.meta.env.VITE_API_KEY;
+  useEffect(() => {
+    const updateTimer = () => {
+      const now = Date.now();
+      const elapsed = Math.floor((now - startTime) / 1000); // Convert to seconds
+      const minutes = Math.floor(elapsed / 60);
+      const seconds = elapsed % 60;
+      setElapsedTime(`${minutes}:${seconds.toString().padStart(2, '0')}`);
+    };
 
-const StatusBadge: React.FC<{ status: Pipeline['status'] }> = ({ status }) => {
+    updateTimer(); // Initial update
+    const interval = setInterval(updateTimer, 1000);
+
+    return () => clearInterval(interval);
+  }, [startTime]);
+
+  return (
+    <div className="flex items-center text-sm text-blue-700 ml-2">
+      <Clock className="w-4 h-4 mr-1" />
+      {elapsedTime}
+    </div>
+  );
+};
+
+const StatusBadge: React.FC<{ status: Pipeline['status']; startTime?: number }> = ({ status, startTime }) => {
   const getStatusColor = (status: Pipeline['status']) => {
-    // Convert status to lowercase for case-insensitive comparison
-    const normalizedStatus = status.toLowerCase();
-    
-    if (normalizedStatus.includes('running')) {
-      return 'bg-blue-500 hover:bg-blue-600';
+    switch (status) {
+      case 'running':
+        return 'bg-blue-500 hover:bg-blue-600';
+      case 'completed':
+        return 'bg-green-500 hover:bg-green-600';
+      case 'failed':
+        return 'bg-red-500 hover:bg-red-600';
+      case 'pending':
+        return 'bg-yellow-500 hover:bg-yellow-600';
+      default:
+        return 'bg-yellow-500 hover:bg-yellow-600';
     }
-    if (normalizedStatus.includes('completed')) {
-      return 'bg-green-500 hover:bg-green-600';
-    }
-    if (normalizedStatus.includes('failed')) {
-      return 'bg-red-500 hover:bg-red-600';
-    }
-    if (normalizedStatus.includes('pending')) {
-      return 'bg-yellow-500 hover:bg-yellow-600';
-    }
-    return 'bg-yellow-500 hover:bg-yellow-600'; // Default case
   };
 
   const formatStatus = (status: Pipeline['status']) => {
@@ -58,9 +60,12 @@ const StatusBadge: React.FC<{ status: Pipeline['status'] }> = ({ status }) => {
   };
 
   return (
-    <Badge className={`${getStatusColor(status)} text-white capitalize`}>
-      {formatStatus(status)}
-    </Badge>
+    <div className="flex items-center">
+      <Badge className={`${getStatusColor(status)} text-white capitalize`}>
+        {formatStatus(status)}
+      </Badge>
+      {status === 'running' && startTime && <RunningTimer startTime={startTime} />}
+    </div>
   );
 };
 
@@ -68,26 +73,15 @@ const PipelinesPage: React.FC = () => {
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [runningPipelines, setRunningPipelines] = useState<Set<string>>(new Set());
+  const [runningPipelines, setRunningPipelines] = useState<Map<string, number>>(new Map());
   const [expandedPipelines, setExpandedPipelines] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
 
   useEffect(() => {
     const fetchPipelines = async () => {
       try {
-        const response = await fetch(`${API_URL}/api/pipelines`, {
-          headers: {
-            'Accept': 'application/json',
-            'x-api-key': API_KEY,
-          },
-        });
-
-        if (!response.ok) {
-          throw new Error('Failed to fetch pipelines');
-        }
-
-        const data = await response.json();
-        setPipelines(data.data || []);
+        const data = await api.listPipelines();
+        setPipelines(data.data);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'An error occurred');
         console.error('Error fetching pipelines:', err);
@@ -100,20 +94,14 @@ const PipelinesPage: React.FC = () => {
 
     // Set up polling for running pipelines
     const pollInterval = setInterval(async () => {
-      const runningPipelineIds = Array.from(runningPipelines);
+      const runningPipelineIds = Array.from(runningPipelines.keys());
       if (runningPipelineIds.length === 0) return;
 
       try {
         const updatedPipelines = await Promise.all(
           runningPipelineIds.map(async (id) => {
-            const response = await fetch(`${API_URL}/api/pipelines/${id}`, {
-              headers: {
-                'Accept': 'application/json',
-                'x-api-key': API_KEY,
-              },
-            });
-            if (!response.ok) throw new Error(`Failed to fetch pipeline ${id}`);
-            return response.json();
+            const response = await api.getPipeline(id);
+            return response;
           })
         );
 
@@ -125,14 +113,10 @@ const PipelinesPage: React.FC = () => {
         );
 
         // Remove completed pipelines from running set
-        setRunningPipelines(prev => {
-          const next = new Set(prev);
-          updatedPipelines.forEach(pipeline => {
-            if (pipeline.status !== 'running' && pipeline.status !== 'PIPELINE_STATUS_RUNNING') {
-              next.delete(pipeline.id);
-            }
-          });
-          return next;
+        updatedPipelines.forEach(pipeline => {
+          if (pipeline.status !== 'running') {
+            runningPipelines.delete(pipeline.id);
+          }
         });
       } catch (err) {
         console.error('Error polling pipelines:', err);
@@ -158,24 +142,16 @@ const PipelinesPage: React.FC = () => {
     if (runningPipelines.has(pipelineId)) return;
 
     try {
-      setRunningPipelines(prev => new Set(prev).add(pipelineId));
+      setRunningPipelines(prev => {
+        const next = new Map(prev);
+        next.set(pipelineId, Date.now());
+        return next;
+      });
       
-      const response = await fetch(`${API_URL}/api/pipelines/${pipelineId}/trigger`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': API_KEY,
-        },
-        body: JSON.stringify({
-          branch: pipelines.find(p => p.id === pipelineId)?.defaultBranch,
-        }),
+      const data = await api.triggerPipeline(pipelineId, {
+        branch: pipelines.find(p => p.id === pipelineId)?.defaultBranch
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to trigger pipeline');
-      }
-
-      const data = await response.json();
       toast.success('Pipeline triggered successfully');
       
       // Update the pipeline status in the list
@@ -190,12 +166,6 @@ const PipelinesPage: React.FC = () => {
     } catch (err) {
       console.error('Error triggering pipeline:', err);
       toast.error(err instanceof Error ? err.message : 'Failed to trigger pipeline');
-    } finally {
-      setRunningPipelines(prev => {
-        const next = new Set(prev);
-        next.delete(pipelineId);
-        return next;
-      });
     }
   };
 
@@ -248,21 +218,18 @@ const PipelinesPage: React.FC = () => {
       <div className="space-y-4">
         {pipelines.map((pipeline) => {
           const isExpanded = expandedPipelines.has(pipeline.id);
-          const isRunning = runningPipelines.has(pipeline.id) || 
-                           pipeline.status === 'running' || 
-                           pipeline.status === 'PIPELINE_STATUS_RUNNING';
-
+          const isRunning = runningPipelines.has(pipeline.id) || pipeline.status === 'running';
+          
           return (
-            <Card key={pipeline.id} className="hover:shadow-md transition-shadow">
+            <Card key={pipeline.id}>
               <CardContent className="p-6">
                 <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center space-x-4">
-                    <h3 className="text-lg font-medium text-gray-900">{pipeline.name}</h3>
-                    <StatusBadge status={pipeline.status} />
-                    <span className="text-sm text-gray-500">
-                      <GitBranch className="w-4 h-4 inline mr-1" />
-                      {pipeline.defaultBranch}
-                    </span>
+                  <div className="flex items-center space-x-3">
+                    <h3 className="text-lg font-medium">{pipeline.name}</h3>
+                    <StatusBadge 
+                      status={pipeline.status} 
+                      startTime={pipeline.status === 'running' ? runningPipelines.get(pipeline.id) : undefined} 
+                    />
                   </div>
                   <div className="flex items-center space-x-2">
                     <Button 

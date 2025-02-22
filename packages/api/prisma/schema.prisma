@@ -1,5 +1,9 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["jsonProtocol"]
 }
 
 datasource db {
@@ -10,50 +14,32 @@ datasource db {
 model Pipeline {
   id            String   @id @default(uuid())
   name          String
-  repository    String
-  defaultBranch String   @default("main")
-  workspaceId   String
-  status        String   @default("pending")
   description   String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  builds        Build[]
+  repository    String
+  defaultBranch String   @map("default_branch")
+  steps         Json     @default("[]") // Array of PipelineStep objects
+  triggers      Json?    @default("{}") // Optional triggers configuration
+  schedule      Json?    @default("{}") // Optional schedule configuration
+  status        String   @default("created")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  runs          PipelineRun[]
+
+  @@map("pipelines")
 }
 
-model Build {
-  id          String     @id @default(uuid())
-  pipelineId  String
-  status      String     @default("pending")
-  branch      String
-  commit      String
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  startedAt   DateTime?
-  completedAt DateTime?
-  duration    Int?
-  artifacts   Artifact[]
-  pipeline    Pipeline   @relation(fields: [pipelineId], references: [id])
-  logs        BuildLog[]
-}
+model PipelineRun {
+  id            String   @id @default(uuid())
+  pipelineId    String   @map("pipeline_id")
+  pipeline      Pipeline @relation(fields: [pipelineId], references: [id])
+  status        String   @default("pending")
+  branch        String
+  commit        String?
+  startedAt     DateTime @default(now()) @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+  stepResults   Json     @default("[]") // Array of step execution results
+  logs          Json     @default("[]") // Array of log entries
+  error         String?
 
-model BuildLog {
-  id        String   @id @default(uuid())
-  buildId   String
-  stepId    String
-  content   String
-  level     String?
-  timestamp DateTime @default(now())
-  build     Build    @relation(fields: [buildId], references: [id])
-}
-
-model Artifact {
-  id          String   @id @default(uuid())
-  buildId     String
-  name        String
-  path        String
-  size        Int
-  contentType String?
-  metadata    Json?
-  createdAt   DateTime @default(now())
-  build       Build    @relation(fields: [buildId], references: [id])
-}
+  @@map("pipeline_runs")
+} 
