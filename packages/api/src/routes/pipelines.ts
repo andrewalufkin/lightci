@@ -48,6 +48,20 @@ const pipelineSchema = {
           }
         }
       }
+    },
+    artifactsEnabled: { type: 'boolean' },
+    artifactPatterns: {
+      type: 'array',
+      items: { type: 'string' }
+    },
+    artifactRetentionDays: { type: 'integer', minimum: 1 },
+    artifactStorageType: { 
+      type: 'string',
+      enum: ['local', 's3']
+    },
+    artifactStorageConfig: {
+      type: 'object',
+      additionalProperties: true
     }
   }
 };

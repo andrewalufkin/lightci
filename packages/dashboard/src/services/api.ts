@@ -16,6 +16,11 @@ export interface Pipeline {
     logs?: string[];
     error?: string;
   }[];
+  artifactsEnabled: boolean;
+  artifactPatterns: string[];
+  artifactRetentionDays: number;
+  artifactStorageType: string;
+  artifactStorageConfig: Record<string, any>;
 }
 
 export interface Build {
@@ -60,7 +65,8 @@ export interface Artifact {
   path: string;
   size: number;
   contentType?: string;
-  createdAt: string;
+  metadata?: Record<string, string>;
+  createdAt: Date;
 }
 
 export interface PaginatedResponse<T> {
@@ -117,6 +123,11 @@ class ApiClient {
     repository: string;
     defaultBranch?: string;
     steps: { name: string; command: string }[];
+    artifactsEnabled?: boolean;
+    artifactPatterns?: string[];
+    artifactRetentionDays?: number;
+    artifactStorageType?: string;
+    artifactStorageConfig?: Record<string, any>;
   }): Promise<Pipeline> {
     const response = await this.client.post('/pipelines', data);
     return response.data;
@@ -132,6 +143,11 @@ class ApiClient {
     repository: string;
     defaultBranch?: string;
     steps: { name: string; command: string }[];
+    artifactsEnabled?: boolean;
+    artifactPatterns?: string[];
+    artifactRetentionDays?: number;
+    artifactStorageType?: string;
+    artifactStorageConfig?: Record<string, any>;
   }): Promise<Pipeline> {
     const response = await this.client.put(`/pipelines/${id}`, data);
     return response.data;
@@ -193,6 +209,12 @@ class ApiClient {
 
   async deleteArtifact(id: string): Promise<void> {
     await this.client.delete(`/artifacts/${id}`);
+  }
+
+  // List artifacts for a build
+  async listBuildArtifacts(buildId: string): Promise<Artifact[]> {
+    const response = await this.client.get(`/runs/${buildId}/artifacts`);
+    return response.data;
   }
 }
 

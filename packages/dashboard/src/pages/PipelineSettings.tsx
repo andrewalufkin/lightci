@@ -26,6 +26,8 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 interface Step {
   id: string;
@@ -46,6 +48,11 @@ interface Pipeline {
   updatedAt: string;
   steps: Step[];
   environment?: Record<string, string>;
+  artifactsEnabled: boolean;
+  artifactPatterns: string[];
+  artifactRetentionDays: number;
+  artifactStorageType: string;
+  artifactStorageConfig: Record<string, any>;
 }
 
 interface SortableStepItemProps {
@@ -161,6 +168,7 @@ const PipelineSettings: React.FC = () => {
   const [isUpdating, setIsUpdating] = useState(false);
   const [newEnvKey, setNewEnvKey] = useState('');
   const [newEnvValue, setNewEnvValue] = useState('');
+  const [draftPatterns, setDraftPatterns] = useState('');
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -184,6 +192,8 @@ const PipelineSettings: React.FC = () => {
         }
 
         const data = await response.json();
+        console.log('Fetched pipeline data:', data);
+        console.log('Artifact patterns:', data.artifactPatterns);
         setPipeline(data);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'An error occurred');
@@ -195,6 +205,12 @@ const PipelineSettings: React.FC = () => {
 
     fetchPipeline();
   }, [id]);
+
+  useEffect(() => {
+    if (pipeline?.artifactsEnabled) {
+      console.log('Artifact settings enabled, pipeline:', pipeline);
+    }
+  }, [pipeline]);
 
   const handleDelete = async () => {
     try {
@@ -223,6 +239,7 @@ const PipelineSettings: React.FC = () => {
   const handleUpdatePipeline = async (updatedPipeline: Pipeline) => {
     try {
       setIsUpdating(true);
+      console.log('Updating pipeline with artifact patterns:', updatedPipeline.artifactPatterns);
       const response = await fetch(`${API_URL}/api/pipelines/${id}`, {
         method: 'PUT',
         headers: {
@@ -347,6 +364,16 @@ const PipelineSettings: React.FC = () => {
     };
 
     handleUpdatePipeline(updatedPipeline);
+  };
+
+  const handleSubmitPatterns = () => {
+    if (!pipeline) return;
+    
+    const newPatterns = draftPatterns.split('\n').filter(p => p.trim());
+    handleUpdatePipeline({
+      ...pipeline,
+      artifactPatterns: newPatterns
+    });
   };
 
   if (loading) {
@@ -474,6 +501,261 @@ const PipelineSettings: React.FC = () => {
                   ))}
                 </div>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Artifact Settings</CardTitle>
+              <CardDescription>Configure how artifacts are handled in your pipeline</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Enable Artifacts</Label>
+                  <div className="text-sm text-muted-foreground">
+                    Allow this pipeline to store and manage build artifacts
+                  </div>
+                </div>
+                <Switch
+                  checked={pipeline?.artifactsEnabled ?? true}
+                  onCheckedChange={(checked) => {
+                    if (pipeline) {
+                      handleUpdatePipeline({
+                        ...pipeline,
+                        artifactsEnabled: checked
+                      });
+                    }
+                  }}
+                />
+              </div>
+
+              {pipeline?.artifactsEnabled && (
+                <>
+                  <div className="space-y-2">
+                    <Label>Artifact Patterns</Label>
+                    <div className="text-sm text-muted-foreground mb-2">
+                      Specify patterns to match files that should be saved as artifacts (one per line)
+                    </div>
+                    <div className="space-y-4">
+                      <div className="bg-muted p-4 rounded-lg">
+                        <h4 className="text-sm font-medium mb-2">Current Patterns</h4>
+                        {pipeline.artifactPatterns && pipeline.artifactPatterns.length > 0 ? (
+                          <div className="space-y-2">
+                            {pipeline.artifactPatterns.map((pattern, index) => (
+                              <div key={index} className="flex items-center justify-between bg-background p-2 rounded">
+                                <code className="text-sm">{pattern}</code>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => {
+                                    if (pipeline) {
+                                      const newPatterns = [...pipeline.artifactPatterns];
+                                      newPatterns.splice(index, 1);
+                                      handleUpdatePipeline({
+                                        ...pipeline,
+                                        artifactPatterns: newPatterns
+                                      });
+                                    }
+                                  }}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">No patterns configured</p>
+                        )}
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Add New Patterns</Label>
+                        <Textarea
+                          value={draftPatterns}
+                          onChange={(e) => setDraftPatterns(e.target.value)}
+                          placeholder="Add new patterns (one per line)&#10;Examples:&#10;*.jar&#10;dist/**/*&#10;build/*.zip"
+                          className="font-mono min-h-[120px]"
+                        />
+                        <div className="flex justify-end">
+                          <Button
+                            onClick={handleSubmitPatterns}
+                            disabled={!draftPatterns.trim() || isUpdating}
+                          >
+                            {isUpdating ? 'Saving...' : 'Save Patterns'}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Retention Period (Days)</Label>
+                    <div className="text-sm text-muted-foreground mb-2">
+                      Number of days to keep artifacts before automatic deletion
+                    </div>
+                    <Input
+                      type="number"
+                      min="1"
+                      value={pipeline.artifactRetentionDays}
+                      onChange={(e) => {
+                        if (pipeline) {
+                          handleUpdatePipeline({
+                            ...pipeline,
+                            artifactRetentionDays: parseInt(e.target.value) || 30
+                          });
+                        }
+                      }}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Storage Type</Label>
+                    <Select
+                      value={pipeline.artifactStorageType}
+                      onValueChange={(value) => {
+                        if (pipeline) {
+                          handleUpdatePipeline({
+                            ...pipeline,
+                            artifactStorageType: value,
+                            artifactStorageConfig: value === 'local' ? {} : pipeline.artifactStorageConfig
+                          });
+                        }
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select storage type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="local">Local Storage</SelectItem>
+                        <SelectItem value="s3">AWS S3</SelectItem>
+                        <SelectItem value="gcs">Google Cloud Storage</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {pipeline.artifactStorageType !== 'local' && (
+                    <div className="space-y-4 border rounded-lg p-4">
+                      <h4 className="font-medium">Storage Configuration</h4>
+                      {pipeline.artifactStorageType === 's3' && (
+                        <>
+                          <div className="space-y-2">
+                            <Label>Bucket Name</Label>
+                            <Input
+                              value={pipeline.artifactStorageConfig.bucketName || ''}
+                              onChange={(e) => {
+                                if (pipeline) {
+                                  handleUpdatePipeline({
+                                    ...pipeline,
+                                    artifactStorageConfig: {
+                                      ...pipeline.artifactStorageConfig,
+                                      bucketName: e.target.value
+                                    }
+                                  });
+                                }
+                              }}
+                              placeholder="my-artifacts-bucket"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Region</Label>
+                            <Input
+                              value={pipeline.artifactStorageConfig.region || ''}
+                              onChange={(e) => {
+                                if (pipeline) {
+                                  handleUpdatePipeline({
+                                    ...pipeline,
+                                    artifactStorageConfig: {
+                                      ...pipeline.artifactStorageConfig,
+                                      region: e.target.value
+                                    }
+                                  });
+                                }
+                              }}
+                              placeholder="us-east-1"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Credentials ID</Label>
+                            <Input
+                              value={pipeline.artifactStorageConfig.credentialsId || ''}
+                              onChange={(e) => {
+                                if (pipeline) {
+                                  handleUpdatePipeline({
+                                    ...pipeline,
+                                    artifactStorageConfig: {
+                                      ...pipeline.artifactStorageConfig,
+                                      credentialsId: e.target.value
+                                    }
+                                  });
+                                }
+                              }}
+                              placeholder="my-cloud-credentials"
+                            />
+                          </div>
+                        </>
+                      )}
+                      {pipeline.artifactStorageType === 'gcs' && (
+                        <>
+                          <div className="space-y-2">
+                            <Label>Bucket Name</Label>
+                            <Input
+                              value={pipeline.artifactStorageConfig.bucketName || ''}
+                              onChange={(e) => {
+                                if (pipeline) {
+                                  handleUpdatePipeline({
+                                    ...pipeline,
+                                    artifactStorageConfig: {
+                                      ...pipeline.artifactStorageConfig,
+                                      bucketName: e.target.value
+                                    }
+                                  });
+                                }
+                              }}
+                              placeholder="my-artifacts-bucket"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Project ID</Label>
+                            <Input
+                              value={pipeline.artifactStorageConfig.projectId || ''}
+                              onChange={(e) => {
+                                if (pipeline) {
+                                  handleUpdatePipeline({
+                                    ...pipeline,
+                                    artifactStorageConfig: {
+                                      ...pipeline.artifactStorageConfig,
+                                      projectId: e.target.value
+                                    }
+                                  });
+                                }
+                              }}
+                              placeholder="my-gcp-project"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Service Account Key</Label>
+                            <Input
+                              value={pipeline.artifactStorageConfig.serviceAccountKey || ''}
+                              onChange={(e) => {
+                                if (pipeline) {
+                                  handleUpdatePipeline({
+                                    ...pipeline,
+                                    artifactStorageConfig: {
+                                      ...pipeline.artifactStorageConfig,
+                                      serviceAccountKey: e.target.value
+                                    }
+                                  });
+                                }
+                              }}
+                              placeholder="my-service-account-key"
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
             </CardContent>
           </Card>
 

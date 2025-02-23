@@ -23,4 +23,10 @@ router.delete('/:id',
   pipelineRunController.deleteRun.bind(pipelineRunController)
 );
 
+// Get pipeline run artifacts
+router.get('/:id/artifacts',
+  authenticate,
+  pipelineRunController.getRunArtifacts.bind(pipelineRunController)
+);
+
 export const pipelineRunRouter = router; 

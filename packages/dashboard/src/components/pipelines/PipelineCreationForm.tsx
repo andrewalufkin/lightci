@@ -102,6 +102,15 @@ interface PipelineApiPayload {
     branches?: string[];
     events?: ('push' | 'pull_request')[];
   };
+  artifactsEnabled: boolean;
+  artifactPatterns: string[];
+  artifactRetentionDays: number;
+  artifactStorageType: 'local' | 's3';
+  artifactStorageConfig: {
+    bucketName?: string;
+    region?: string;
+    credentialsId?: string;
+  };
 }
 
 interface StepFormData {
@@ -407,6 +416,8 @@ const PipelineCreationForm = () => {
     command: '',
     type: 'custom'
   });
+  const [newPattern, setNewPattern] = useState('');
+  const [patternError, setPatternError] = useState('');
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -555,7 +566,10 @@ const PipelineCreationForm = () => {
       timeout: 3600
     }));
 
-    return {
+    const patterns = formData.artifacts.patterns.map(p => p.pattern);
+    const storageType: 'local' | 's3' = formData.artifacts.storage.type === 'aws_s3' ? 's3' : 'local';
+
+    const payload: PipelineApiPayload = {
       name: formData.name,
       repository: formData.repositoryUrl,
       description: formData.description,
@@ -564,66 +578,23 @@ const PipelineCreationForm = () => {
       triggers: {
         events,
         branches: [formData.branch]
-      }
+      },
+      artifactsEnabled: formData.artifacts.enabled,
+      artifactPatterns: patterns,
+      artifactRetentionDays: formData.artifacts.retention.defaultDays,
+      artifactStorageType: storageType,
+      artifactStorageConfig: formData.artifacts.storage.config
     };
+
+    return payload;
   };
 
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+
     try {
-      setSubmitting(true);
-      
-      // Improved validation
-      if (!formData.name) {
-        alert('Pipeline name is required');
-        setSubmitting(false);
-        return;
-      }
-      if (!formData.repositoryUrl) {
-        alert('Repository URL is required');
-        setSubmitting(false);
-        return;
-      }
-      if (!isValidGitUrl(formData.repositoryUrl)) {
-        alert('Please enter a valid Git repository URL (e.g., https://github.com/username/repo.git)');
-        setSubmitting(false);
-        return;
-      }
-
-      // Ensure REPO_URL environment variable is set
-      const hasRepoUrl = formData.environmentVariables.some(env => env.key === 'REPO_URL' && env.value === formData.repositoryUrl);
-      if (!hasRepoUrl) {
-        alert('REPO_URL environment variable is missing or out of sync with repository URL');
-        setSubmitting(false);
-        return;
-      }
-
-      // Validate GitHub repository
-      const isValidRepo = await validateGitHubRepo(formData.repositoryUrl);
-      if (!isValidRepo) {
-        alert('Repository not found. Please check the URL and ensure you have access to it.');
-        setSubmitting(false);
-        return;
-      }
-
-      // Validate branch
-      const isValidBranch = await validateGitHubBranch(formData.repositoryUrl, formData.branch);
-      if (!isValidBranch) {
-        alert(`Branch "${formData.branch}" not found in the repository.`);
-        setSubmitting(false);
-        return;
-      }
-
-      if (formData.steps.length === 0) {
-        alert('At least one step is required');
-        setSubmitting(false);
-        return;
-      }
-
       const apiPayload = transformFormToApiPayload();
-      console.log('Submitting pipeline with payload:', apiPayload);
-
-      // Use configured API URL
       const response = await fetch(`${API_URL}/api/pipelines`, {
         method: 'POST',
         headers: {
@@ -634,16 +605,8 @@ const PipelineCreationForm = () => {
         body: JSON.stringify(apiPayload),
       });
 
-      // Log the raw response for debugging
-      console.log('Raw Response:', {
-        status: response.status,
-        statusText: response.statusText,
-        headers: Object.fromEntries(response.headers.entries()),
-      });
-
       let responseData;
       const responseText = await response.text();
-      console.log('Raw response text:', responseText);
 
       try {
         responseData = JSON.parse(responseText);
@@ -651,13 +614,6 @@ const PipelineCreationForm = () => {
         console.error('Failed to parse response as JSON:', e);
         responseData = { message: 'Invalid server response' };
       }
-
-      console.log('API Response:', {
-        status: response.status,
-        statusText: response.statusText,
-        headers: Object.fromEntries(response.headers.entries()),
-        data: responseData
-      });
 
       if (response.ok) {
         navigate('/');
@@ -675,26 +631,10 @@ const PipelineCreationForm = () => {
             .join('\n');
         }
 
-        console.error('Pipeline creation failed:', {
-          status: response.status,
-          error: responseData,
-          request: {
-            url: `${API_URL}/api/pipelines`,
-            payload: apiPayload
-          }
-        });
-
         alert(errorMessage);
       }
     } catch (error) {
-      console.error('Error creating pipeline:', {
-        error,
-        formData,
-        apiPayload: transformFormToApiPayload(),
-        request: {
-          url: `${API_URL}/api/pipelines`
-        }
-      });
+      console.error('Error creating pipeline:', error);
       
       if (error instanceof Error) {
         alert(`Failed to create pipeline: ${error.message}\nCheck the console for more details.`);
@@ -732,14 +672,28 @@ const PipelineCreationForm = () => {
     }));
   };
 
-  const handleAddPattern = (pattern: string, description: string) => {
-    setFormData(prev => ({
-      ...prev,
-      artifacts: {
-        ...prev.artifacts,
-        patterns: [...prev.artifacts.patterns, { pattern, description }]
-      }
-    }));
+  const handleAddPattern = (pattern: string) => {
+    if (!pattern.trim()) {
+      setPatternError('Pattern cannot be empty');
+      return;
+    }
+    
+    try {
+      // Basic pattern validation
+      new RegExp(pattern.replace(/\*/g, '.*'));
+      
+      setFormData(prev => ({
+        ...prev,
+        artifacts: {
+          ...prev.artifacts,
+          patterns: [...prev.artifacts.patterns, { pattern: pattern.trim(), description: '' }]
+        }
+      }));
+      setNewPattern('');
+      setPatternError('');
+    } catch (e) {
+      setPatternError('Invalid pattern format');
+    }
   };
 
   const handleRemovePattern = (index: number) => {
@@ -1089,39 +1043,55 @@ const PipelineCreationForm = () => {
 
                       <div className="space-y-4">
                         <Label>Artifact Patterns</Label>
-                        <div className="grid grid-cols-2 gap-4">
-                          {Object.entries(defaultArtifactPatterns).map(([type, patterns]) => (
-                            <Card key={type} className="p-4">
-                              <CardTitle className="text-sm mb-2">{type.charAt(0).toUpperCase() + type.slice(1)}</CardTitle>
-                              {patterns.map((pattern) => (
-                                <Button
-                                  key={pattern.pattern}
-                                  variant="outline"
-                                  className="w-full mb-2 justify-start"
-                                  onClick={() => handleAddPattern(pattern.pattern, pattern.description)}
-                                >
-                                  <Plus className="w-4 h-4 mr-2" />
-                                  {pattern.pattern}
-                                </Button>
-                              ))}
-                            </Card>
-                          ))}
+                        <div className="space-y-2">
+                          <div className="flex gap-2">
+                            <Input
+                              value={newPattern}
+                              onChange={(e) => {
+                                setNewPattern(e.target.value);
+                                setPatternError('');
+                              }}
+                              placeholder="Enter pattern (e.g. dist/**, build/*.jar)"
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleAddPattern(newPattern);
+                                }
+                              }}
+                            />
+                            <Button
+                              type="button"
+                              onClick={() => handleAddPattern(newPattern)}
+                            >
+                              Add
+                            </Button>
+                          </div>
+                          {patternError && (
+                            <p className="text-sm text-destructive">{patternError}</p>
+                          )}
+                          <p className="text-sm text-muted-foreground">Press Enter or click Add to add a pattern</p>
                         </div>
 
                         <div className="space-y-2">
                           <Label>Current Patterns</Label>
-                          {formData.artifacts.patterns.map((pattern, index) => (
-                            <div key={index} className="flex items-center gap-2">
-                              <Input value={pattern.pattern} readOnly />
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => handleRemovePattern(index)}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
+                          {formData.artifacts.patterns.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">No patterns configured</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {formData.artifacts.patterns.map((pattern, index) => (
+                                <div key={index} className="flex items-center gap-2 bg-muted p-2 rounded">
+                                  <code className="flex-1 text-sm">{pattern.pattern}</code>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => handleRemovePattern(index)}
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              ))}
                             </div>
-                          ))}
+                          )}
                         </div>
                       </div>
 

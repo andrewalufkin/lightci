@@ -6,11 +6,21 @@ export interface Build {
   status: 'pending' | 'running' | 'success' | 'failed' | 'cancelled';
   branch: string;
   commit: string;
-  steps: Step[];
-  createdAt: Date;
-  updatedAt: Date;
-  startedAt?: Date;
-  completedAt?: Date;
+  steps?: Step[];
+  stepResults?: {
+    id: string;
+    name: string;
+    status: string;
+    command: string;
+    output?: string;
+    error?: string;
+    startedAt?: string;
+    completedAt?: string;
+  }[];
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
   duration?: number;
   queuePosition?: number;
   triggeredBy?: string;

@@ -1,10 +1,14 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { EngineService } from '../services/engine.service';
+import { NotFoundError } from '../utils/errors';
+import { RequestHandler } from 'express';
 
 const prisma = new PrismaClient();
+const engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
 
 export class PipelineRunController {
-  async listRuns(req: Request, res: Response) {
+  listRuns: RequestHandler = async (req, res) => {
     try {
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 10;
@@ -80,9 +84,9 @@ export class PipelineRunController {
         message: 'An error occurred while fetching the pipeline runs. Please try again.'
       });
     }
-  }
+  };
 
-  async getRun(req: Request, res: Response) {
+  getRun: RequestHandler = async (req, res) => {
     try {
       const { id } = req.params;
       
@@ -94,10 +98,7 @@ export class PipelineRunController {
       });
 
       if (!run) {
-        return res.status(404).json({ 
-          error: 'Pipeline run not found',
-          message: 'The requested pipeline run could not be found.'
-        });
+        throw new NotFoundError('Run not found');
       }
 
       // Transform the data to match the frontend's expected format
@@ -135,40 +136,63 @@ export class PipelineRunController {
 
       res.json(transformedRun);
     } catch (error) {
-      console.error('[PipelineRun] Error getting run:', error);
-      res.status(500).json({ 
-        error: 'Failed to get pipeline run',
-        message: 'An error occurred while fetching the pipeline run. Please try again.'
-      });
+      if (error instanceof NotFoundError) {
+        res.status(404).json({ error: error.message });
+      } else {
+        console.error('[PipelineRun] Error getting run:', error);
+        res.status(500).json({ 
+          error: 'Failed to get pipeline run',
+          message: 'An error occurred while fetching the pipeline run. Please try again.'
+        });
+      }
     }
-  }
+  };
 
-  async deleteRun(req: Request, res: Response) {
+  deleteRun: RequestHandler = async (req, res) => {
     try {
       const { id } = req.params;
       
+      // First check if the run exists
       const run = await prisma.pipelineRun.findUnique({
         where: { id }
       });
 
       if (!run) {
-        return res.status(404).json({ 
-          error: 'Pipeline run not found',
-          message: 'The requested pipeline run could not be found.'
-        });
+        throw new NotFoundError('Run not found');
       }
 
+      // Delete artifacts if they exist
+      if (run.artifactsPath) {
+        await engineService.deleteBuild(id);
+      }
+
+      // Delete the run from the database
       await prisma.pipelineRun.delete({
         where: { id }
       });
 
       res.status(204).send();
     } catch (error) {
-      console.error('[PipelineRun] Error deleting run:', error);
-      res.status(500).json({ 
-        error: 'Failed to delete pipeline run',
-        message: 'An error occurred while deleting the pipeline run. Please try again.'
-      });
+      if (error instanceof NotFoundError) {
+        res.status(404).json({ error: error.message });
+      } else {
+        console.error('[PipelineRun] Error deleting run:', error);
+        res.status(500).json({ 
+          error: 'Failed to delete pipeline run',
+          message: 'An error occurred while deleting the pipeline run. Please try again.'
+        });
+      }
     }
-  }
+  };
+
+  getRunArtifacts: RequestHandler = async (req, res) => {
+    try {
+      const { id } = req.params;
+      const artifacts = await engineService.getBuildArtifacts(id);
+      res.json(artifacts);
+    } catch (error) {
+      console.error('Error getting run artifacts:', error);
+      res.status(500).json({ error: 'Failed to get run artifacts' });
+    }
+  };
 } 

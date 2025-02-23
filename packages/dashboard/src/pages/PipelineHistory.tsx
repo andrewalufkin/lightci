@@ -7,6 +7,7 @@ import { ChevronLeft, ChevronRight, Trash2, ChevronDown } from 'lucide-react';
 import { api, Build as APIBuild } from '../services/api';
 import { toast } from 'sonner';
 import { PipelineSteps } from '@/components/pipelines/PipelineSteps';
+import { BuildArtifacts } from '@/components/builds/BuildArtifacts';
 
 interface Build extends APIBuild {
   parameters?: Record<string, string>;
@@ -243,18 +244,22 @@ const PipelineHistory: React.FC = () => {
                 </div>
               </div>
               
-              {expandedBuilds.has(build.id) && build.stepResults && (
-                <div className="mt-4">
-                  <PipelineSteps 
-                    steps={build.stepResults.map(step => ({
-                      name: step.name,
-                      status: step.status,
-                      duration: step.duration ? `${Math.floor(step.duration / 60)}m ${step.duration % 60}s` : undefined,
-                      logs: step.output ? [step.output] : undefined,
-                      error: step.error
-                    }))} 
-                    expanded={true}
-                  />
+              {expandedBuilds.has(build.id) && (
+                <div className="mt-4 space-y-4">
+                  {build.stepResults && (
+                    <PipelineSteps 
+                      steps={build.stepResults.map(step => ({
+                        name: step.name,
+                        status: step.status,
+                        duration: step.duration ? `${Math.floor(step.duration / 60)}m ${step.duration % 60}s` : undefined,
+                        logs: step.output ? [step.output] : undefined,
+                        error: step.error
+                      }))} 
+                      expanded={true}
+                    />
+                  )}
+                  
+                  <BuildArtifacts buildId={build.id} />
                 </div>
               )}
             </CardContent>

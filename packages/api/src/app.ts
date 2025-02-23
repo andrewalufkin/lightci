@@ -1,48 +1,35 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express from 'express';
 import cors from 'cors';
-import { pipelineRouter } from './routes/pipelines';
-import { pipelineRunRouter } from './routes/pipeline-runs';
-import { AuthenticationError, NotFoundError, ValidationError } from './utils/errors';
+import { pipelineRouter } from './routes/pipelines.js';
+import { pipelineRunRouter } from './routes/pipeline-runs.js';
+import { AuthenticationError, NotFoundError, ValidationError } from './utils/errors.js';
+import { scheduleArtifactCleanup } from './services/artifact-cleanup.service';
 
 const app = express();
+
+// Initialize artifact cleanup service
+scheduleArtifactCleanup();
 
 app.use(cors());
 app.use(express.json());
 
-// Routes
+// API routes
 app.use('/api/pipelines', pipelineRouter);
 app.use('/api/runs', pipelineRunRouter);
 
 // Error handling middleware
-app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-  console.error('Error:', err);
-
-  if (err instanceof ValidationError) {
-    return res.status(400).json({
-      error: 'Validation Error',
-      message: err.message
-    });
-  }
-
+app.use((err, req, res, next) => {
+  console.error(err);
+  
   if (err instanceof AuthenticationError) {
-    return res.status(401).json({
-      error: 'Authentication Error',
-      message: err.message
-    });
+    res.status(401).json({ error: err.message });
+  } else if (err instanceof NotFoundError) {
+    res.status(404).json({ error: err.message });
+  } else if (err instanceof ValidationError) {
+    res.status(400).json({ error: err.message });
+  } else {
+    res.status(500).json({ error: 'Internal server error' });
   }
-
-  if (err instanceof NotFoundError) {
-    return res.status(404).json({
-      error: 'Not Found',
-      message: err.message
-    });
-  }
-
-  // Default error
-  res.status(500).json({
-    error: 'Internal Server Error',
-    message: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred'
-  });
 });
 
 export default app;

@@ -21,6 +21,11 @@ export interface DatabasePipeline {
   steps: PipelineStep[];
   triggers?: Record<string, any>;
   schedule?: Record<string, any>;
+  artifactsEnabled: boolean;
+  artifactPatterns: string[];
+  artifactRetentionDays: number;
+  artifactStorageType: string;
+  artifactStorageConfig: Record<string, any>;
   status: string;
   createdAt: Date;
   updatedAt: Date;
@@ -37,6 +42,11 @@ export class DatabaseService {
       steps: typeof dbPipeline.steps === 'string' ? JSON.parse(dbPipeline.steps) : dbPipeline.steps,
       triggers: typeof dbPipeline.triggers === 'string' ? JSON.parse(dbPipeline.triggers) : dbPipeline.triggers,
       schedule: typeof dbPipeline.schedule === 'string' ? JSON.parse(dbPipeline.schedule) : dbPipeline.schedule,
+      artifactsEnabled: dbPipeline.artifactsEnabled,
+      artifactPatterns: typeof dbPipeline.artifactPatterns === 'string' ? JSON.parse(dbPipeline.artifactPatterns) : dbPipeline.artifactPatterns,
+      artifactRetentionDays: dbPipeline.artifactRetentionDays,
+      artifactStorageType: dbPipeline.artifactStorageType,
+      artifactStorageConfig: typeof dbPipeline.artifactStorageConfig === 'string' ? JSON.parse(dbPipeline.artifactStorageConfig) : dbPipeline.artifactStorageConfig,
       status: dbPipeline.status,
       createdAt: dbPipeline.createdAt,
       updatedAt: dbPipeline.updatedAt
@@ -88,9 +98,14 @@ export class DatabaseService {
         repository: pipeline.repository,
         description: pipeline.description,
         defaultBranch: pipeline.defaultBranch,
-        steps: pipeline.steps,
-        triggers: pipeline.triggers,
-        schedule: pipeline.schedule,
+        steps: JSON.stringify(pipeline.steps),
+        triggers: pipeline.triggers ? JSON.stringify(pipeline.triggers) : undefined,
+        schedule: pipeline.schedule ? JSON.stringify(pipeline.schedule) : undefined,
+        artifactsEnabled: pipeline.artifactsEnabled ?? true,
+        artifactPatterns: JSON.stringify(pipeline.artifactPatterns ?? []),
+        artifactRetentionDays: pipeline.artifactRetentionDays ?? 30,
+        artifactStorageType: pipeline.artifactStorageType ?? 'local',
+        artifactStorageConfig: JSON.stringify(pipeline.artifactStorageConfig ?? {}),
         status: 'created'
       }
     });
@@ -112,9 +127,14 @@ export class DatabaseService {
     if (pipeline.repository) data.repository = pipeline.repository;
     if (pipeline.defaultBranch) data.defaultBranch = pipeline.defaultBranch;
     if (pipeline.status) data.status = pipeline.status;
-    if (pipeline.steps) data.steps = pipeline.steps;
-    if (pipeline.triggers) data.triggers = pipeline.triggers;
-    if (pipeline.schedule) data.schedule = pipeline.schedule;
+    if (pipeline.steps) data.steps = JSON.stringify(pipeline.steps);
+    if (pipeline.triggers) data.triggers = JSON.stringify(pipeline.triggers);
+    if (pipeline.schedule) data.schedule = JSON.stringify(pipeline.schedule);
+    if (pipeline.artifactsEnabled !== undefined) data.artifactsEnabled = pipeline.artifactsEnabled;
+    if (pipeline.artifactPatterns) data.artifactPatterns = JSON.stringify(pipeline.artifactPatterns);
+    if (pipeline.artifactRetentionDays !== undefined) data.artifactRetentionDays = pipeline.artifactRetentionDays;
+    if (pipeline.artifactStorageType) data.artifactStorageType = pipeline.artifactStorageType;
+    if (pipeline.artifactStorageConfig) data.artifactStorageConfig = JSON.stringify(pipeline.artifactStorageConfig);
 
     const updated = await prisma.pipeline.update({
       where: { id },
@@ -124,9 +144,45 @@ export class DatabaseService {
   }
 
   async deletePipeline(id: string): Promise<void> {
-    await prisma.pipeline.delete({
-      where: { id }
-    });
+    try {
+      // First check if pipeline exists
+      const pipeline = await prisma.pipeline.findUnique({
+        where: { id }
+      });
+
+      if (!pipeline) {
+        console.log(`[Database] Pipeline ${id} not found, skipping deletion`);
+        return;
+      }
+
+      // Delete all pipeline runs first
+      const deleteRunsResult = await prisma.pipelineRun.deleteMany({
+        where: { 
+          OR: [
+            { pipelineId: id },
+            { pipeline: { id } }
+          ]
+        }
+      });
+      console.log(`[Database] Deleted ${deleteRunsResult.count} pipeline runs for pipeline ${id}`);
+
+      // Then delete the pipeline itself
+      await prisma.pipeline.delete({
+        where: { id }
+      });
+
+      console.log(`[Database] Successfully deleted pipeline ${id} and its runs from database`);
+    } catch (error) {
+      console.error(`[Database] Error deleting pipeline ${id}:`, error);
+      if (error instanceof Error && error.name === 'PrismaClientKnownRequestError') {
+        // If pipeline doesn't exist, just log and return
+        if ((error as any).code === 'P2025') {
+          console.log(`[Database] Pipeline ${id} already deleted, skipping`);
+          return;
+        }
+      }
+      throw error;
+    }
   }
 }
 

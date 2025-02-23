@@ -20,6 +20,11 @@ model Pipeline {
   steps         Json     @default("[]") // Array of PipelineStep objects
   triggers      Json?    @default("{}") // Optional triggers configuration
   schedule      Json?    @default("{}") // Optional schedule configuration
+  artifactsEnabled Boolean @default(true) @map("artifacts_enabled")
+  artifactPatterns Json? @default("[]") @map("artifact_patterns") // Array of pattern strings
+  artifactRetentionDays Int @default(30) @map("artifact_retention_days")
+  artifactStorageType String @default("local") @map("artifact_storage_type")
+  artifactStorageConfig Json? @default("{}") @map("artifact_storage_config")
   status        String   @default("created")
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
@@ -40,6 +45,11 @@ model PipelineRun {
   stepResults   Json     @default("[]") // Array of step execution results
   logs          Json     @default("[]") // Array of log entries
   error         String?
+  artifactsCollected Boolean @default(false) @map("artifacts_collected")
+  artifactsPath String? @map("artifacts_path")
+  artifactsSize Int? @map("artifacts_size")
+  artifactsCount Int? @map("artifacts_count")
+  artifactsExpireAt DateTime? @map("artifacts_expire_at")
 
   @@map("pipeline_runs")
 } 

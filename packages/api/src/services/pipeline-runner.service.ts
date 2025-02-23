@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
+import { glob } from 'glob';
 
 const execAsync = promisify(exec);
 const prisma = new PrismaClient();
@@ -38,6 +39,12 @@ interface Workspace {
   path: string;
 }
 
+interface ArtifactConfig {
+  patterns?: string[];
+  retentionDays?: number;
+  enabled?: boolean;
+}
+
 type PipelineWithSteps = {
   id: string;
   name: string;
@@ -45,6 +52,7 @@ type PipelineWithSteps = {
   defaultBranch: string;
   steps: PipelineStep[];
   status: string;
+  artifactConfig?: ArtifactConfig;
 }
 
 export class PipelineRunnerService {
@@ -322,17 +330,25 @@ export class PipelineRunnerService {
         });
       }
 
-      // Update run as completed
+      // After all steps complete successfully, collect artifacts
+      if (workspacePath) {
+        try {
+          await this.collectArtifacts(pipeline, runId, workspacePath);
+        } catch (error) {
+          console.error(`[PipelineRunner] Failed to collect artifacts:`, error);
+          // Don't fail the pipeline run if artifact collection fails
+        }
+      }
+
+      // Update pipeline status to completed
       await prisma.pipelineRun.update({
         where: { id: runId },
         data: {
           status: 'completed',
-          completedAt: new Date(),
-          stepResults: stepResults as any
+          completedAt: new Date()
         }
       });
 
-      // Update pipeline status to completed
       await prisma.pipeline.update({
         where: { id: pipeline.id },
         data: { status: 'completed' }
@@ -359,10 +375,116 @@ export class PipelineRunnerService {
       
       throw error;
     } finally {
+      // Collect artifacts before cleanup if enabled
+      if (workspacePath && (pipeline.artifactConfig?.enabled !== false)) {
+        try {
+          await this.collectArtifacts(pipeline, runId, workspacePath);
+        } catch (error) {
+          console.error(`[PipelineRunner] Failed to collect artifacts:`, error);
+          // Don't fail the pipeline if artifact collection fails
+        }
+      }
+
       // Cleanup workspace
       if (workspacePath) {
         await this.workspaceService.deleteWorkspace({ path: workspacePath } as any).catch(console.error);
       }
+    }
+  }
+
+  private async collectArtifacts(
+    pipeline: PipelineWithSteps, 
+    runId: string, 
+    workspacePath: string
+  ): Promise<void> {
+    try {
+      console.log(`[PipelineRunner] Starting artifact collection for run ${runId}`);
+      
+      // Get artifact patterns from pipeline config or use defaults
+      const artifactPatterns = pipeline.artifactConfig?.patterns || ['**/dist/**', '**/build/**'];
+      
+      // Create artifacts directory structure
+      const artifactsBaseDir = process.env.ARTIFACTS_ROOT || '/tmp/lightci/artifacts';
+      const runArtifactsDir = path.join(artifactsBaseDir, runId);
+      
+      await fs.mkdir(runArtifactsDir, { recursive: true });
+      
+      console.log(`[PipelineRunner] Created artifacts directory: ${runArtifactsDir}`);
+      
+      let artifactsCount = 0;
+      let totalSize = 0;
+      
+      // Process each pattern
+      for (const pattern of artifactPatterns) {
+        // Find files matching the pattern
+        const files = await glob(pattern, { 
+          cwd: workspacePath,
+          dot: true,  // Include dotfiles
+          nodir: true, // Only include files, not directories
+          absolute: false, // Return relative paths
+          ignore: [
+            '**/node_modules/**',  // Ignore all node_modules directories
+            '**/.git/**',          // Also ignore .git directory
+            '**/coverage/**',      // Ignore test coverage
+            '**/tmp/**'            // Ignore temporary directories
+          ]
+        });
+        
+        console.log(`[PipelineRunner] Pattern "${pattern}" matched ${files.length} files`);
+        
+        // Log first 10 matches as sample
+        if (files.length > 0) {
+          console.log(`[PipelineRunner] Sample matches for pattern "${pattern}":`);
+          files.slice(0, 10).forEach(file => {
+            console.log(`  - ${file}`);
+          });
+          if (files.length > 10) {
+            console.log(`  ... and ${files.length - 10} more files`);
+          }
+        }
+        
+        // Copy each file to artifacts directory, preserving relative paths
+        for (const file of files) {
+          const sourcePath = path.join(workspacePath, file);
+          const destPath = path.join(runArtifactsDir, file);
+          
+          // Create directory structure for the destination
+          await fs.mkdir(path.dirname(destPath), { recursive: true });
+          
+          // Copy file
+          await fs.copyFile(sourcePath, destPath);
+          
+          // Get file size
+          const stats = await fs.stat(sourcePath);
+          totalSize += stats.size;
+          artifactsCount++;
+          
+          console.log(`[PipelineRunner] Copied artifact: ${file} (${stats.size} bytes)`);
+        }
+      }
+      
+      // Calculate expiration date (default 30 days if not specified)
+      const retentionDays = pipeline.artifactConfig?.retentionDays || 30;
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + retentionDays);
+      
+      // Record artifact information in database
+      await prisma.pipelineRun.update({
+        where: { id: runId },
+        data: {
+          artifactsCollected: true,
+          artifactsPath: runArtifactsDir,
+          artifactsCount: artifactsCount,
+          artifactsSize: totalSize,
+          artifactsExpireAt: expiresAt
+        }
+      });
+      
+      console.log(`[PipelineRunner] Successfully collected ${artifactsCount} artifacts (${totalSize} bytes) for run ${runId}`);
+      
+    } catch (error) {
+      console.error(`[PipelineRunner] Error collecting artifacts:`, error);
+      throw error;
     }
   }
 } 

@@ -5,13 +5,12 @@ export interface PipelineConfig {
   repository: string;
   description?: string;
   defaultBranch?: string;
-  steps: {
-    id?: string;
-    name: string;
-    command: string;
-    timeout?: number;
-    environment?: Record<string, string>;
-  }[];
+  steps: Omit<Step, 'id' | 'status' | 'duration' | 'error'>[];
+  artifactsEnabled?: boolean;
+  artifactPatterns?: string[];
+  artifactRetentionDays?: number;
+  artifactStorageType?: string;
+  artifactStorageConfig?: Record<string, any>;
 }
 
 export interface Pipeline {
@@ -25,6 +24,11 @@ export interface Pipeline {
   steps: Step[];
   triggers?: Record<string, any>;
   schedule?: Record<string, any>;
+  artifactsEnabled: boolean;
+  artifactPatterns: string[];
+  artifactRetentionDays: number;
+  artifactStorageType: string;
+  artifactStorageConfig: Record<string, any>;
   createdAt: Date;
   updatedAt: Date;
 }

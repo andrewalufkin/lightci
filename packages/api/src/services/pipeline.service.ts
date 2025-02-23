@@ -66,6 +66,11 @@ export class PipelineService {
       steps: steps,
       triggers: dbPipeline.triggers,
       schedule: dbPipeline.schedule,
+      artifactsEnabled: dbPipeline.artifactsEnabled,
+      artifactPatterns: dbPipeline.artifactPatterns || [],
+      artifactRetentionDays: dbPipeline.artifactRetentionDays || 30,
+      artifactStorageType: dbPipeline.artifactStorageType || 'local',
+      artifactStorageConfig: dbPipeline.artifactStorageConfig || {},
       createdAt: dbPipeline.createdAt,
       updatedAt: dbPipeline.updatedAt
     };
@@ -98,7 +103,12 @@ export class PipelineService {
         command: step.command,
         timeout: step.timeout,
         environment: step.environment || {}
-      }))
+      })),
+      artifactsEnabled: config.artifactsEnabled ?? true,
+      artifactPatterns: config.artifactPatterns ?? [],
+      artifactRetentionDays: config.artifactRetentionDays ?? 30,
+      artifactStorageType: config.artifactStorageType ?? 'local',
+      artifactStorageConfig: config.artifactStorageConfig ?? {}
     };
 
     const created = await db.createPipeline(pipeline);
@@ -106,18 +116,22 @@ export class PipelineService {
   }
 
   async updatePipeline(id: string, config: PipelineConfig): Promise<Pipeline> {
-    const pipeline = {
+    const pipeline: Partial<Omit<DatabasePipeline, 'id' | 'createdAt' | 'updatedAt'>> = {
       name: config.name,
       repository: config.repository,
       description: config.description,
       defaultBranch: config.defaultBranch,
       steps: config.steps.map(step => ({
-        id: step.id || step.name,
+        id: `step-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         name: step.name,
         command: step.command,
-        timeout: step.timeout,
         environment: step.environment || {}
-      }))
+      })),
+      artifactsEnabled: config.artifactsEnabled ?? true,
+      artifactPatterns: config.artifactPatterns ?? [],
+      artifactRetentionDays: config.artifactRetentionDays ?? 30,
+      artifactStorageType: config.artifactStorageType ?? 'local',
+      artifactStorageConfig: config.artifactStorageConfig ?? {}
     };
 
     const updated = await db.updatePipeline(id, pipeline);
@@ -135,15 +149,10 @@ export class PipelineService {
         throw new Error('Pipeline not found');
       }
 
-      // Delete all associated pipeline runs first
-      await prisma.pipelineRun.deleteMany({
-        where: { pipelineId: id }
-      });
-
-      // Clean up filesystem resources
+      // Clean up filesystem resources and runs
       await engineService.deletePipeline(id);
 
-      // Then delete from database
+      // Delete from database
       await db.deletePipeline(id);
     } catch (error) {
       console.error(`[PipelineService] Error deleting pipeline ${id}:`, error);

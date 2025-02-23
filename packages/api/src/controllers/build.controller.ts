@@ -99,15 +99,23 @@ export class BuildController {
   async getBuildArtifacts(req: Request, res: Response) {
     try {
       const { id } = req.params;
+      console.log(`[BuildController] Fetching artifacts for build/run ID: ${id}`);
+      
       const build = await this.engineService.getBuild(id);
+      console.log(`[BuildController] Build lookup result:`, build);
       
       if (!build) {
+        console.log(`[BuildController] Build not found for ID: ${id}`);
         throw new NotFoundError('Build not found');
       }
 
+      console.log(`[BuildController] Fetching artifacts from EngineService for build ID: ${id}`);
       const artifacts = await this.engineService.getBuildArtifacts(id);
+      console.log(`[BuildController] Retrieved ${artifacts.length} artifacts:`, artifacts);
+      
       res.json(artifacts);
     } catch (error) {
+      console.error(`[BuildController] Error in getBuildArtifacts:`, error);
       if (error instanceof NotFoundError) {
         res.status(404).json({ error: error.message });
       } else {
