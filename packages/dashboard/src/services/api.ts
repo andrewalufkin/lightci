@@ -168,24 +168,24 @@ class ApiClient {
   // Pipeline run endpoints
   async listRuns(page = 1, limit = 10, pipelineId?: string): Promise<PaginatedResponse<Build>> {
     const url = pipelineId 
-      ? `/runs?page=${page}&limit=${limit}&pipelineId=${pipelineId}`
-      : `/runs?page=${page}&limit=${limit}`;
+      ? `/pipeline-runs?page=${page}&limit=${limit}&pipelineId=${pipelineId}`
+      : `/pipeline-runs?page=${page}&limit=${limit}`;
     const response = await this.client.get(url);
     return response.data;
   }
 
   async getRun(id: string): Promise<Build> {
-    const response = await this.client.get(`/runs/${id}`);
+    const response = await this.client.get(`/pipeline-runs/${id}`);
     return response.data;
   }
 
   async getRunLogs(id: string): Promise<BuildLog[]> {
-    const response = await this.client.get(`/runs/${id}/logs`);
+    const response = await this.client.get(`/pipeline-runs/${id}/logs`);
     return response.data;
   }
 
   async deleteBuild(buildId: string): Promise<void> {
-    await this.client.delete(`/runs/${buildId}`);
+    await this.client.delete(`/pipeline-runs/${buildId}`);
   }
 
   // Artifact endpoints

@@ -1,6 +1,9 @@
 import { Request, Response } from 'express';
+import { ParamsDictionary } from 'express-serve-static-core';
 import { EngineService } from '../services/engine.service';
 import { NotFoundError, ValidationError } from '../utils/errors';
+import * as path from 'path';
+import * as fs from 'fs';
 
 export class ArtifactController {
   constructor(private engineService: EngineService) {}
@@ -8,25 +11,74 @@ export class ArtifactController {
   async downloadArtifact(req: Request, res: Response) {
     try {
       const { id } = req.params;
+      console.log(`[ArtifactController] Download request for artifact ID: ${id}`);
+      
       const artifact = await this.engineService.getArtifact(id);
+      console.log(`[ArtifactController] getArtifact result:`, artifact);
       
       if (!artifact) {
+        console.log(`[ArtifactController] Artifact not found for ID: ${id}`);
         throw new NotFoundError('Artifact not found');
       }
 
-      // In a real implementation, we would stream the file from storage
-      // For now, we'll just send the mock data
-      const mockContent = `Mock content for artifact ${artifact.name}`;
+      // Get the pipeline run to access the artifacts path
+      const run = await this.engineService.getPipelineRun(artifact.buildId);
+      console.log(`[ArtifactController] getPipelineRun result:`, run);
+      
+      if (!run || !run.artifactsCollected) {
+        console.log(`[ArtifactController] Run not found or artifacts not collected. Run:`, run);
+        throw new NotFoundError('Artifact path not found');
+      }
 
+      // Get the artifacts base directory
+      const artifactsBaseDir = process.env.ARTIFACTS_ROOT || '/tmp/lightci/artifacts';
+      console.log(`[ArtifactController] Using artifacts base directory: ${artifactsBaseDir}`);
+
+      // Ensure we have the full absolute path
+      const artifactsPath = run.artifactsPath && path.isAbsolute(run.artifactsPath)
+        ? run.artifactsPath
+        : path.join(artifactsBaseDir, artifact.buildId);
+      console.log(`[ArtifactController] Resolved artifacts path: ${artifactsPath}`);
+
+      const filePath = path.join(artifactsPath, artifact.path);
+      console.log(`[ArtifactController] Full file path: ${filePath}`);
+
+      // Check if file exists
+      const fileExists = fs.existsSync(filePath);
+      console.log(`[ArtifactController] File exists at ${filePath}: ${fileExists}`);
+      
+      if (!fileExists) {
+        throw new NotFoundError('Artifact file not found');
+      }
+
+      // Set appropriate headers
       res.setHeader('Content-Type', artifact.contentType || 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${artifact.name}"`);
-      res.setHeader('Content-Length', mockContent.length);
-      
-      res.send(mockContent);
+      console.log(`[ArtifactController] Set headers for file: ${artifact.name}, type: ${artifact.contentType || 'application/octet-stream'}`);
+
+      // Stream the file
+      console.log(`[ArtifactController] Starting to stream file: ${filePath}`);
+      const fileStream = fs.createReadStream(filePath);
+      fileStream.pipe(res);
+
+      // Handle errors during streaming
+      fileStream.on('error', (error) => {
+        console.error('[ArtifactController] Error streaming artifact file:', error);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to download artifact' });
+        }
+      });
+
+      // Log when the stream finishes
+      fileStream.on('end', () => {
+        console.log(`[ArtifactController] Successfully completed streaming file: ${filePath}`);
+      });
     } catch (error) {
       if (error instanceof NotFoundError) {
+        console.log(`[ArtifactController] NotFoundError:`, error.message);
         res.status(404).json({ error: error.message });
       } else {
+        console.error('[ArtifactController] Error downloading artifact:', error);
         res.status(500).json({ error: 'Failed to download artifact' });
       }
     }

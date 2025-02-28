@@ -49,6 +49,11 @@ const pipelineSchema = {
         }
       }
     },
+    githubToken: { 
+      type: 'string',
+      minLength: 1,
+      description: 'GitHub Personal Access Token with repo and admin:repo_hook scopes'
+    },
     artifactsEnabled: { type: 'boolean' },
     artifactPatterns: {
       type: 'array',
@@ -63,7 +68,24 @@ const pipelineSchema = {
       type: 'object',
       additionalProperties: true
     }
-  }
+  },
+  // If triggers.events includes 'push', githubToken is required
+  allOf: [{
+    if: {
+      properties: {
+        triggers: {
+          properties: {
+            events: {
+              contains: { const: 'push' }
+            }
+          }
+        }
+      }
+    },
+    then: {
+      required: ['githubToken']
+    }
+  }]
 };
 
 // List all pipelines

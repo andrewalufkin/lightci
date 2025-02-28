@@ -4,31 +4,17 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as crypto from 'crypto';
 import { glob } from 'glob';
+import { DeploymentService } from './deployment.service';
+import { EC2Client, DescribeInstancesCommand } from '@aws-sdk/client-ec2';
+import { PipelineStateService } from './pipeline-state.service';
+import { PipelineWithSteps, PipelineStep, StepResult } from '../models/Pipeline';
+import { prisma } from '../db';
 
 const execAsync = promisify(exec);
-const prisma = new PrismaClient();
-
-interface StepResult {
-  id: string;
-  name: string;
-  command: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  startTime?: Date;
-  endTime?: Date;
-  output?: string;
-  error?: string;
-  environment?: Record<string, string>;
-}
-
-interface PipelineStep {
-  id: string;
-  name: string;
-  command: string;
-  timeout?: number;
-  environment?: Record<string, string>;
-}
+const prismaClient = new PrismaClient();
 
 interface WorkspaceConfig {
   name: string;
@@ -36,23 +22,18 @@ interface WorkspaceConfig {
 }
 
 interface Workspace {
+  id: string;
+  name: string;
+  repository: string;
   path: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 interface ArtifactConfig {
   patterns?: string[];
   retentionDays?: number;
   enabled?: boolean;
-}
-
-type PipelineWithSteps = {
-  id: string;
-  name: string;
-  repository: string;
-  defaultBranch: string;
-  steps: PipelineStep[];
-  status: string;
-  artifactConfig?: ArtifactConfig;
 }
 
 export class PipelineRunnerService {
@@ -89,7 +70,7 @@ export class PipelineRunnerService {
 
   async runPipeline(pipelineId: string, branch: string, commit?: string): Promise<string> {
     // Get pipeline details
-    const pipeline = await prisma.pipeline.findUnique({
+    const pipeline = await prismaClient.pipeline.findUnique({
       where: { id: pipelineId }
     }) as PipelineWithSteps | null;
 
@@ -130,7 +111,7 @@ export class PipelineRunnerService {
     });
 
     // Create pipeline run
-    const pipelineRun = await prisma.pipelineRun.create({
+    const pipelineRun = await prismaClient.pipelineRun.create({
       data: {
         pipeline: {
           connect: { id: pipelineId }
@@ -144,7 +125,7 @@ export class PipelineRunnerService {
     });
 
     // Update pipeline status to running
-    await prisma.pipeline.update({
+    await prismaClient.pipeline.update({
       where: { id: pipelineId },
       data: { status: 'running' }
     });
@@ -157,237 +138,241 @@ export class PipelineRunnerService {
     return pipelineRun.id;
   }
 
-  private async executePipeline(pipeline: PipelineWithSteps, runId: string, branch: string): Promise<void> {
-    let workspacePath: string | undefined;
+  private async handleDeployment(pipeline: PipelineWithSteps, runId: string) {
+    console.log(`[PipelineRunner] Starting deployment process for pipeline ${pipeline.id}, run ${runId}`);
+    console.log(`[PipelineRunner] Deployment configuration:`, {
+      platform: pipeline.deploymentPlatform,
+      enabled: pipeline.deploymentEnabled,
+      config: pipeline.deploymentConfig
+    });
+
+    const deploymentService = new DeploymentService();
+    console.log(`[PipelineRunner] Created deployment service instance`);
     
+    const deployResult = await deploymentService.deployPipelineRun(runId);
+    console.log(`[PipelineRunner] Deployment result:`, {
+      success: deployResult.success,
+      message: deployResult.message,
+      logCount: deployResult.logs?.length || 0
+    });
+    
+    if (!deployResult.success) {
+      console.error(`[PipelineRunner] Deployment failed:`, deployResult.message);
+      throw new Error(deployResult.message);
+    }
+    
+    console.log(`[PipelineRunner] Deployment completed successfully`);
+    return { output: deployResult.message || 'Deployment successful' };
+  }
+
+  private async executePipeline(pipeline: PipelineWithSteps, runId: string, branch: string): Promise<void> {
+    let workspace: Workspace | undefined;
+    let deploymentCompleted = false;
+
     try {
-      // Create workspace
-      const workspace = await this.workspaceService.createWorkspace({
-        name: pipeline.name,
-        repository: pipeline.repository
-      } as WorkspaceConfig);
-      workspacePath = (workspace as unknown as Workspace).path;
-      
-      console.log(`[PipelineRunner] Created workspace:`, {
-        workspacePath,
-        exists: await fs.access(workspacePath).then(() => true).catch(() => false)
+      // Set up timeout
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('Pipeline execution timeout'));
+        }, PipelineStateService.PIPELINE_TIMEOUT_MS);
       });
 
-      // Get the current step results from the pipeline run
-      const pipelineRun = await prisma.pipelineRun.findUnique({
-        where: { id: runId }
-      });
-      
-      if (!pipelineRun) {
-        throw new Error('Pipeline run not found');
-      }
+      // Create the execution promise
+      const executionPromise = (async () => {
+        // Get workspace
+        workspace = await this.workspaceService.createWorkspace({
+          name: pipeline.name,
+          repository: pipeline.repository
+        });
+        const workspacePath = workspace.path;
+        console.log(`[PipelineRunner] Created workspace at ${workspacePath}`);
 
-      console.log(`[PipelineRunner] Starting pipeline execution:`, {
-        runId,
-        pipelineId: pipeline.id,
-        currentStatus: pipelineRun.status,
-        currentStepResults: pipelineRun.stepResults
-      });
-
-      const steps = (typeof pipeline.steps === 'string' ? JSON.parse(pipeline.steps) : pipeline.steps) as PipelineStep[];
-      const stepResults = pipelineRun.stepResults as StepResult[];
-
-      console.log(`[PipelineRunner] Parsed step results:`, {
-        runId,
-        stepResults: JSON.stringify(stepResults)
-      });
-
-      // Execute each step
-      for (const step of steps) {
-        console.log(`[PipelineRunner] Looking for step result:`, {
+        // Parse steps
+        const steps = (typeof pipeline.steps === 'string' ? JSON.parse(pipeline.steps) : pipeline.steps) as PipelineStep[];
+        console.log(`[PipelineRunner] Parsed steps:`, {
           runId,
-          step: {
-            id: step.id,
-            name: step.name
-          },
-          availableStepResults: stepResults.map(sr => ({
-            id: sr.id,
-            name: sr.name
+          steps: steps.map(s => ({ 
+            id: s.id, 
+            name: s.name,
+            runLocation: s.runLocation,
+            runOnDeployedInstance: s.runOnDeployedInstance
           }))
         });
 
-        // Find the corresponding step result
-        const stepResult = stepResults.find(sr => 
-          // Try to match by ID first
-          (step.id && sr.id === step.id) ||
-          // If no ID match, try to match by name
-          (!step.id && sr.id === step.name)
-        );
-
-        if (!stepResult) {
-          console.log(`[PipelineRunner] Warning: No step result found for step:`, {
-            runId,
-            stepId: step.id,
-            stepName: step.name,
-            stepResults: JSON.stringify(stepResults)
-          });
-          continue;
-        }
-
-        console.log(`[PipelineRunner] Starting step execution:`, {
-          runId,
-          stepId: stepResult.id,
-          stepName: stepResult.name,
-          currentStatus: stepResult.status
+        // Initialize step results
+        const stepResults = steps.map(step => {
+          const stepId = step.id || step.name;
+          return {
+            id: stepId,
+            name: step.name,
+            command: step.command,
+            status: 'pending' as StepResult['status'],
+            environment: step.environment || {},
+            runLocation: step.runLocation,
+            runOnDeployedInstance: step.runOnDeployedInstance,
+            startTime: undefined as Date | undefined,
+            endTime: undefined as Date | undefined,
+            output: undefined as string | undefined,
+            error: undefined as string | undefined
+          };
         });
 
-        // Update step status to running
-        stepResult.status = 'running';
-        stepResult.startTime = new Date();
+        // Execute each step
+        for (let i = 0; i < steps.length; i++) {
+          const step = steps[i];
+          const stepResult = stepResults.find(sr => 
+            (step.id && sr.id === step.id) ||
+            (!step.id && sr.id === step.name)
+          );
 
-        // Add logging for step status update
-        console.log(`[PipelineRunner] Updating step ${stepResult.name} status to running:`, {
-          runId,
-          stepId: stepResult.id,
-          status: stepResult.status,
-          stepResults: JSON.stringify(stepResults)
-        });
-
-        // Update run with current step status
-        const updateResult = await prisma.pipelineRun.update({
-          where: { id: runId },
-          data: {
-            stepResults: stepResults as any
+          if (!stepResult) {
+            console.log(`[PipelineRunner] Warning: No step result found for step:`, {
+              runId,
+              stepId: step.id,
+              stepName: step.name,
+              stepResults: JSON.stringify(stepResults)
+            });
+            continue;
           }
-        });
 
-        console.log(`[PipelineRunner] Step status update result:`, {
-          runId,
-          stepId: stepResult.id,
-          updatedStepResults: updateResult.stepResults
-        });
+          stepResult.status = 'running';
+          stepResult.startTime = new Date();
 
-        // If this is the source step, use the pipeline repository URL
-        const command = step.name === 'Source' 
-          ? `git clone ${pipeline.repository} . && git checkout ${branch}`
-          : step.command;
-
-        // Execute step
-        const result = await this.executeCommand(
-          command,
-          workspacePath,
-          step.environment || {}
-        );
-
-        // Update step result
-        stepResult.endTime = new Date();
-        stepResult.output = result.output;
-        
-        if (result.error) {
-          stepResult.status = 'failed';
-          stepResult.error = result.error;
-          
-          // Add logging for failed step
-          console.log(`[PipelineRunner] Step ${stepResult.name} failed:`, {
-            runId,
-            stepId: stepResult.id,
-            status: stepResult.status,
-            error: result.error,
-            stepResults: JSON.stringify(stepResults)
-          });
-          
-          // Update run as failed
-          await prisma.pipelineRun.update({
+          await prismaClient.pipelineRun.update({
             where: { id: runId },
             data: {
-              status: 'failed',
-              completedAt: new Date(),
-              stepResults: stepResults as any,
-              error: `Step "${step.name}" failed: ${result.error}`
+              stepResults: stepResults as any
             }
           });
 
-          // Update pipeline status to failed
-          await prisma.pipeline.update({
-            where: { id: pipeline.id },
-            data: { status: 'failed' }
-          });
-          
-          return;
+          const command = step.name === 'Source' 
+            ? `git clone ${pipeline.repository} . && git checkout ${branch}`
+            : step.command;
+
+          let result;
+          // Check if this is a deployment step
+          if (step.name === 'Deploy' || step.name === 'Deployment' || step.type === 'deploy') {
+            console.log(`[PipelineRunner] Handling deployment step ${step.name}:`, {
+              runId,
+              stepId: step.id,
+              type: step.type,
+              name: step.name
+            });
+            result = await this.handleDeployment(pipeline, runId);
+            deploymentCompleted = true;
+          } 
+          // Check if this step should run on deployed instance
+          else if (deploymentCompleted && (
+            step.runLocation === 'deployed' || 
+            step.runOnDeployedInstance === true || 
+            (pipeline.deploymentEnabled && pipeline.deploymentConfig)
+          )) {
+            console.log(`[PipelineRunner] Executing step ${step.name} on deployed instance:`, {
+              runId,
+              stepId: step.id,
+              runLocation: step.runLocation,
+              runOnDeployedInstance: step.runOnDeployedInstance,
+              deploymentEnabled: pipeline.deploymentEnabled
+            });
+            result = await this.executeOnDeployedInstance(
+              command,
+              pipeline.deploymentConfig,
+              step.environment || {}
+            );
+          } else {
+            console.log(`[PipelineRunner] Executing step ${step.name} locally:`, {
+              runId,
+              stepId: step.id,
+              runLocation: step.runLocation,
+              runOnDeployedInstance: step.runOnDeployedInstance,
+              deploymentEnabled: pipeline.deploymentEnabled
+            });
+            result = await this.executeCommand(
+              command,
+              workspacePath,
+              step.environment || {}
+            );
+          }
+
+          if (result.error) {
+            // Update the step status to failed before throwing the error
+            stepResult.status = 'failed';
+            stepResult.error = result.error;
+            stepResult.output = result.output;
+            stepResult.endTime = new Date();
+
+            // Update the pipeline run with the failed step
+            await prismaClient.pipelineRun.update({
+              where: { id: runId },
+              data: {
+                stepResults: stepResults as any,
+                error: result.error
+              }
+            });
+
+            throw new Error(result.error);
+          }
+
+          await this.updateStepStatus(runId, step.id, 'completed', stepResults, result.output);
+
+          if (step.name === 'Build') {
+            await this.collectArtifacts(pipeline, runId, workspacePath);
+          }
         }
 
-        stepResult.status = 'completed';
+        // After all steps complete successfully
+        if (workspacePath) {
+          try {
+            await this.collectArtifacts(pipeline, runId, workspacePath);
+          } catch (error) {
+            console.error(`[PipelineRunner] Failed to collect artifacts:`, error);
+          }
+        }
 
-        // Add logging for completed step
-        console.log(`[PipelineRunner] Step ${stepResult.name} completed:`, {
-          runId,
-          stepId: stepResult.id,
-          status: stepResult.status,
-          stepResults: JSON.stringify(stepResults)
-        });
-
-        // Update run with completed step status
-        await prisma.pipelineRun.update({
+        await prismaClient.pipelineRun.update({
           where: { id: runId },
           data: {
-            stepResults: stepResults as any
+            status: 'completed',
+            completedAt: new Date()
           }
         });
-      }
 
-      // After all steps complete successfully, collect artifacts
-      if (workspacePath) {
-        try {
-          await this.collectArtifacts(pipeline, runId, workspacePath);
-        } catch (error) {
-          console.error(`[PipelineRunner] Failed to collect artifacts:`, error);
-          // Don't fail the pipeline run if artifact collection fails
-        }
-      }
+        await prismaClient.pipeline.update({
+          where: { id: pipeline.id },
+          data: { status: 'completed' }
+        });
+      })();
 
-      // Update pipeline status to completed
-      await prisma.pipelineRun.update({
-        where: { id: runId },
-        data: {
-          status: 'completed',
-          completedAt: new Date()
-        }
-      });
+      // Race between execution and timeout
+      await Promise.race([executionPromise, timeoutPromise]);
 
-      await prisma.pipeline.update({
-        where: { id: pipeline.id },
-        data: { status: 'completed' }
-      });
+    } catch (error) {
+      console.error(`[PipelineRunner] Error executing pipeline:`, error);
 
-    } catch (error: any) {
-      console.error('Pipeline execution error:', error);
-      
-      // Update run with error
-      await prisma.pipelineRun.update({
+      // Update pipeline and run status to failed
+      await prismaClient.pipelineRun.update({
         where: { id: runId },
         data: {
           status: 'failed',
           completedAt: new Date(),
-          error: error.message
+          error: error instanceof Error ? error.message : 'Unknown error'
         }
       });
 
-      // Update pipeline status to failed
-      await prisma.pipeline.update({
+      await prismaClient.pipeline.update({
         where: { id: pipeline.id },
         data: { status: 'failed' }
       });
-      
+
       throw error;
     } finally {
-      // Collect artifacts before cleanup if enabled
-      if (workspacePath && (pipeline.artifactConfig?.enabled !== false)) {
+      // Clean up workspace
+      if (workspace) {
         try {
-          await this.collectArtifacts(pipeline, runId, workspacePath);
+          await this.workspaceService.deleteWorkspace(workspace);
         } catch (error) {
-          console.error(`[PipelineRunner] Failed to collect artifacts:`, error);
-          // Don't fail the pipeline if artifact collection fails
+          console.error(`[PipelineRunner] Error cleaning up workspace:`, error);
         }
-      }
-
-      // Cleanup workspace
-      if (workspacePath) {
-        await this.workspaceService.deleteWorkspace({ path: workspacePath } as any).catch(console.error);
       }
     }
   }
@@ -398,15 +383,51 @@ export class PipelineRunnerService {
     workspacePath: string
   ): Promise<void> {
     try {
+      // Check if artifacts have already been collected for this run
+      const run = await prismaClient.pipelineRun.findUnique({
+        where: { id: runId }
+      });
+
+      if (run?.artifactsCollected) {
+        console.log(`[PipelineRunner] Artifacts already collected for run ${runId}, skipping collection`);
+        return;
+      }
+
       console.log(`[PipelineRunner] Starting artifact collection for run ${runId}`);
       
-      // Get artifact patterns from pipeline config or use defaults
-      const artifactPatterns = pipeline.artifactConfig?.patterns || ['**/dist/**', '**/build/**'];
+      // Default artifact patterns
+      const defaultPatterns = [
+        '**/dist/**',           // Distribution files
+        '**/build/**',          // Build output
+        '**/src/**',            // Source code files
+        '**/package.json',      // Package configuration in any directory
+        './package.json',       // Root package.json
+        'package.json',         // Alternative root package.json pattern
+        '**/.env*',             // Environment configuration files
+        '**/scripts/**',        // Script directories
+        '**/*.sh',              // Shell scripts
+        '**/bin/**',            // Binary/executable scripts
+        '**/docker-compose*',   // Docker compose files
+        '**/Dockerfile*',       // Dockerfile configurations
+        '**/config/**'          // Configuration directories
+      ];
+
+      // Get configured patterns and combine with defaults
+      const configuredPatterns = pipeline.artifactConfig?.patterns || [];
+      const artifactPatterns = Array.from(new Set([...defaultPatterns, ...configuredPatterns]));
+
+      console.log(`[PipelineRunner] Using artifact patterns:`, {
+        defaultPatterns,
+        configuredPatterns,
+        combinedPatterns: artifactPatterns
+      });
       
       // Create artifacts directory structure
       const artifactsBaseDir = process.env.ARTIFACTS_ROOT || '/tmp/lightci/artifacts';
       const runArtifactsDir = path.join(artifactsBaseDir, runId);
       
+      // Ensure directory exists and is empty
+      await fs.rm(runArtifactsDir, { recursive: true, force: true });
       await fs.mkdir(runArtifactsDir, { recursive: true });
       
       console.log(`[PipelineRunner] Created artifacts directory: ${runArtifactsDir}`);
@@ -416,50 +437,44 @@ export class PipelineRunnerService {
       
       // Process each pattern
       for (const pattern of artifactPatterns) {
-        // Find files matching the pattern
-        const files = await glob(pattern, { 
+        console.log(`[PipelineRunner] Processing pattern: ${pattern}`);
+        
+        // Use glob to find matching files
+        const files = await glob(pattern, {
           cwd: workspacePath,
-          dot: true,  // Include dotfiles
-          nodir: true, // Only include files, not directories
-          absolute: false, // Return relative paths
+          dot: true,
+          nodir: true,
+          absolute: false,
           ignore: [
-            '**/node_modules/**',  // Ignore all node_modules directories
-            '**/.git/**',          // Also ignore .git directory
-            '**/coverage/**',      // Ignore test coverage
-            '**/tmp/**'            // Ignore temporary directories
+            '**/node_modules/**',
+            '**/.git/**',
+            '**/coverage/**',
+            '**/tmp/**'
           ]
         });
-        
-        console.log(`[PipelineRunner] Pattern "${pattern}" matched ${files.length} files`);
-        
-        // Log first 10 matches as sample
-        if (files.length > 0) {
-          console.log(`[PipelineRunner] Sample matches for pattern "${pattern}":`);
-          files.slice(0, 10).forEach(file => {
-            console.log(`  - ${file}`);
-          });
-          if (files.length > 10) {
-            console.log(`  ... and ${files.length - 10} more files`);
-          }
-        }
         
         // Copy each file to artifacts directory, preserving relative paths
         for (const file of files) {
           const sourcePath = path.join(workspacePath, file);
           const destPath = path.join(runArtifactsDir, file);
           
-          // Create directory structure for the destination
-          await fs.mkdir(path.dirname(destPath), { recursive: true });
-          
-          // Copy file
-          await fs.copyFile(sourcePath, destPath);
-          
-          // Get file size
-          const stats = await fs.stat(sourcePath);
-          totalSize += stats.size;
-          artifactsCount++;
-          
-          console.log(`[PipelineRunner] Copied artifact: ${file} (${stats.size} bytes)`);
+          try {
+            // Create directory structure for the destination
+            await fs.mkdir(path.dirname(destPath), { recursive: true });
+            
+            // Copy file
+            await fs.copyFile(sourcePath, destPath);
+            
+            // Get file size
+            const stats = await fs.stat(sourcePath);
+            totalSize += stats.size;
+            artifactsCount++;
+            
+            console.log(`[PipelineRunner] Copied artifact: ${file} (${stats.size} bytes)`);
+          } catch (error) {
+            console.error(`[PipelineRunner] Error copying artifact ${file}:`, error);
+            // Continue with other files even if one fails
+          }
         }
       }
       
@@ -469,7 +484,7 @@ export class PipelineRunnerService {
       expiresAt.setDate(expiresAt.getDate() + retentionDays);
       
       // Record artifact information in database
-      await prisma.pipelineRun.update({
+      await prismaClient.pipelineRun.update({
         where: { id: runId },
         data: {
           artifactsCollected: true,
@@ -484,7 +499,120 @@ export class PipelineRunnerService {
       
     } catch (error) {
       console.error(`[PipelineRunner] Error collecting artifacts:`, error);
+      // Update pipeline run with error information but don't throw
+      await prismaClient.pipelineRun.update({
+        where: { id: runId },
+        data: {
+          error: `Failed to collect artifacts: ${error.message}`
+        }
+      });
+    }
+  }
+
+  // Helper method to execute commands on the deployed instance
+  private async executeOnDeployedInstance(
+    command: string,
+    deploymentConfig: any,
+    environment: Record<string, string> = {}
+  ): Promise<{ output: string; error?: string }> {
+    try {
+      // Parse config if it's a string
+      const config = typeof deploymentConfig === 'string' ? JSON.parse(deploymentConfig) : deploymentConfig;
+      
+      if (!config.awsAccessKeyId || !config.awsSecretAccessKey || !config.awsRegion) {
+        throw new Error('Missing required AWS credentials');
+      }
+
+      // Create new EC2 client with credentials
+      const ec2Client = new EC2Client({
+        region: config.awsRegion,
+        credentials: {
+          accessKeyId: config.awsAccessKeyId,
+          secretAccessKey: config.awsSecretAccessKey
+        }
+      });
+
+      // Get instance details
+      const describeCommand = new DescribeInstancesCommand({
+        InstanceIds: [config.ec2InstanceId]
+      });
+      const instanceData = await ec2Client.send(describeCommand);
+
+      const instance = instanceData.Reservations?.[0]?.Instances?.[0];
+      if (!instance || !instance.PublicDnsName) {
+        throw new Error(`Unable to find public DNS for instance ${config.ec2InstanceId}`);
+      }
+
+      // Create temporary directory for SSH key
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lightci-ssh-'));
+      const keyPath = path.join(tempDir, 'ssh_key.pem');
+
+      try {
+        // Write SSH key to temporary file
+        await fs.writeFile(keyPath, config.ec2SshKey, { mode: 0o600 });
+
+        // Build environment variables string
+        const envString = Object.entries(environment)
+          .map(([key, value]) => `export ${key}="${value}"`)
+          .join(' && ');
+
+        // Add cleanup command to kill any existing processes on port 3000
+        const cleanupCmd = `sudo lsof -t -i:3000 | xargs -r sudo kill -9`;
+        
+        // Append '&' to run in background and redirect output to nohup.out
+        const backgroundCommand = `nohup ${command} > nohup.out 2>&1 &`;
+        
+        // Execute command via SSH with cleanup and background execution
+        const sshCommand = `ssh -o StrictHostKeyChecking=no -i "${keyPath}" ${config.ec2Username}@${instance.PublicDnsName} "${cleanupCmd} 2>/dev/null || true && cd ${config.ec2DeployPath || '/home/ec2-user/app'} && ${envString} ${envString ? '&&' : ''} (${backgroundCommand}) && echo 'Process started in background'"`;
+
+        try {
+          const { stdout, stderr } = await execAsync(sshCommand);
+          await fs.rm(tempDir, { recursive: true });
+          
+          if (stderr) {
+            return { output: stdout, error: stderr };
+          }
+          return { output: stdout };
+        } catch (error: any) {
+          await fs.rm(tempDir, { recursive: true });
+          return { 
+            output: error.stdout || '',
+            error: error.stderr || error.message 
+          };
+        }
+      } catch (error: any) {
+        // Clean up temp directory on error
+        await fs.rm(tempDir, { recursive: true }).catch(() => {});
+        throw error;
+      }
+    } catch (error: any) {
+      console.error('[PipelineRunner] Execution on deployed instance failed:', error);
       throw error;
     }
   }
-} 
+
+  private async updateStepStatus(
+    runId: string,
+    stepId: string,
+    status: StepResult['status'],
+    stepResults: StepResult[],
+    output: string
+  ): Promise<void> {
+    const stepResult = stepResults.find(sr => sr.id === stepId);
+    if (!stepResult) {
+      throw new Error(`Step result not found for step ID: ${stepId}`);
+    }
+
+    stepResult.status = status;
+    stepResult.endTime = new Date();
+    stepResult.output = output;
+
+    // Update run with completed step status
+    await prismaClient.pipelineRun.update({
+      where: { id: runId },
+      data: {
+        stepResults: stepResults as any
+      }
+    });
+  }
+}

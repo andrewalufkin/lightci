@@ -158,7 +158,10 @@ export class PipelineRunController {
       });
 
       if (!run) {
-        throw new NotFoundError('Run not found');
+        // If run doesn't exist, it might have been already deleted by the engine
+        // We'll consider this a success case
+        res.status(204).send();
+        return;
       }
 
       // Delete artifacts if they exist
@@ -166,10 +169,20 @@ export class PipelineRunController {
         await engineService.deleteBuild(id);
       }
 
-      // Delete the run from the database
-      await prisma.pipelineRun.delete({
-        where: { id }
-      });
+      try {
+        // Try to delete the run from the database
+        await prisma.pipelineRun.delete({
+          where: { id }
+        });
+      } catch (dbError) {
+        // If the record is already gone (deleted by engine), that's fine
+        if (dbError.code === 'P2025') {
+          console.log('[PipelineRun] Record already deleted by engine:', id);
+        } else {
+          // If it's any other database error, rethrow it
+          throw dbError;
+        }
+      }
 
       res.status(204).send();
     } catch (error) {
@@ -193,6 +206,85 @@ export class PipelineRunController {
     } catch (error) {
       console.error('Error getting run artifacts:', error);
       res.status(500).json({ error: 'Failed to get run artifacts' });
+    }
+  };
+  
+  updateRunStatus: RequestHandler = async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status, stepResults, logs, error } = req.body;
+      
+      console.log(`[PipelineRunController] Updating run ${id} status to ${status}`);
+      
+      if (!status) {
+        res.status(400).json({ error: 'Status is required' });
+        return;
+      }
+      
+      // First check if the run exists
+      const run = await prisma.pipelineRun.findUnique({
+        where: { id }
+      });
+      
+      if (!run) {
+        throw new NotFoundError('Run not found');
+      }
+      
+      console.log(`[PipelineRunController] Found run ${id} with current status ${run.status}`);
+      
+      // Prepare update data
+      const updateData: any = { status };
+      if (stepResults) updateData.stepResults = stepResults;
+      if (logs) updateData.logs = logs;
+      if (error) updateData.error = error;
+      if (status === 'completed' || status === 'failed') {
+        updateData.completedAt = new Date();
+      }
+      
+      console.log(`[PipelineRunController] Updating run ${id} in database with status ${status}`);
+      
+      // Update the run in the database
+      const updatedRun = await prisma.pipelineRun.update({
+        where: { id },
+        data: updateData,
+        include: { pipeline: true }
+      });
+      
+      // If the run is completed successfully, trigger deployment if configured
+      if (status === 'completed') {
+        console.log(`[PipelineRunController] Run ${id} completed successfully, checking if deployment should be triggered`);
+        
+        // Check if deployment is enabled for this pipeline
+        if (updatedRun.pipeline.deploymentEnabled) {
+          console.log(`[PipelineRunController] Deployment is enabled for pipeline ${updatedRun.pipelineId}, triggering deployment`);
+          
+          // Trigger deployment asynchronously - don't await
+          engineService.handlePipelineRunCompletion(id)
+            .catch(error => {
+              console.error(`[PipelineRunController] Error handling completion for run ${id}:`, error);
+            });
+            
+          console.log(`[PipelineRunController] Deployment triggered for run ${id}`);
+        } else {
+          console.log(`[PipelineRunController] Deployment is not enabled for pipeline ${updatedRun.pipelineId}, skipping deployment`);
+        }
+      }
+      
+      res.json({
+        id: updatedRun.id,
+        status: updatedRun.status
+      });
+    } catch (error) {
+      console.error('[PipelineRunController] Error updating run status:', error);
+      
+      if (error instanceof NotFoundError) {
+        res.status(404).json({ error: error.message });
+      } else {
+        res.status(500).json({ 
+          error: 'Failed to update pipeline run status',
+          message: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
     }
   };
 } 

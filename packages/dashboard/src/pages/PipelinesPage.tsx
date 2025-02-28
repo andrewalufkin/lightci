@@ -215,6 +215,15 @@ const PipelinesPage: React.FC = () => {
 
   return (
     <div className="container py-8">
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-2xl font-bold">Pipelines</h1>
+        <Link
+          to="/pipelines/new"
+          className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
+        >
+          New Pipeline
+        </Link>
+      </div>
       <div className="space-y-4">
         {pipelines.map((pipeline) => {
           const isExpanded = expandedPipelines.has(pipeline.id);

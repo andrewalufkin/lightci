@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { GitBranch, Settings, Play, Clock, List, Package, Plus, Trash2 } from 'lucide-react';
+import { GitBranch, Settings, Play, Clock, List, Package, Plus, Trash2, Rocket } from 'lucide-react';
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogCancel, AlertDialogAction } from '@/components/ui/alert-dialog';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -28,6 +28,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical, Terminal } from 'lucide-react';
+import { Textarea } from '@/components/ui/textarea';
 
 interface PipelineStep {
   id: string;
@@ -35,6 +36,8 @@ interface PipelineStep {
   description: string;
   command: string;
   type: 'source' | 'build' | 'test' | 'deploy' | 'custom';
+  automatic?: boolean;
+  runOnDeployedInstance?: boolean;
 }
 
 interface ArtifactPattern {
@@ -67,6 +70,30 @@ interface ArtifactConfig {
   retention: ArtifactRetention;
 }
 
+interface DeploymentConfig {
+  enabled: boolean;
+  platform: 'aws' | 'gcp' | 'azure' | 'kubernetes' | 'custom';
+  config: {
+    // Common fields
+    region?: string;
+    service?: string;
+    cluster?: string;
+    namespace?: string;
+    credentials?: string;
+    customSettings?: Record<string, string>;
+    // AWS EC2 specific fields
+    awsRegion?: string; // For backward compatibility
+    awsAccessKeyId?: string;
+    awsSecretAccessKey?: string;
+    ec2InstanceId?: string;
+    ec2DeployPath?: string;
+    ec2SshKey?: string;
+    ec2Username?: string;
+    // Environment variables
+    environmentVariables?: Record<string, string>;
+  };
+}
+
 interface PipelineFormData {
   repositoryUrl: string;
   branch: string;
@@ -79,29 +106,33 @@ interface PipelineFormData {
     onPullRequest: boolean;
     onTag: boolean;
   };
+  githubToken?: string;  // GitHub Personal Access Token for webhook creation
   schedule: {
     cron: string;
     timezone: string;
   };
   steps: PipelineStep[];
   artifacts: ArtifactConfig;
+  deployment: DeploymentConfig;
 }
 
 interface PipelineApiPayload {
   name: string;
   repository: string;
   description?: string;
+  defaultBranch: string;
   steps: {
     name: string;
     command: string;
     timeout?: number;
     environment?: Record<string, string>;
+    runLocation?: string;
   }[];
-  defaultBranch: string;
   triggers?: {
     branches?: string[];
     events?: ('push' | 'pull_request')[];
   };
+  githubToken?: string;
   artifactsEnabled: boolean;
   artifactPatterns: string[];
   artifactRetentionDays: number;
@@ -110,6 +141,26 @@ interface PipelineApiPayload {
     bucketName?: string;
     region?: string;
     credentialsId?: string;
+  };
+  deploymentEnabled: boolean;
+  deploymentPlatform?: 'aws' | 'gcp' | 'azure' | 'kubernetes' | 'custom';
+  deploymentConfig?: {
+    // Common fields
+    region?: string;
+    service?: string;
+    cluster?: string;
+    namespace?: string;
+    credentials?: string;
+    customSettings?: Record<string, string>;
+    // EC2 specific fields
+    awsRegion?: string;
+    awsAccessKeyId?: string;
+    awsSecretAccessKey?: string;
+    ec2InstanceId?: string;
+    ec2DeployPath?: string;
+    ec2SshKey?: string;
+    ec2Username?: string;
+    environmentVariables?: Record<string, string>;
   };
 }
 
@@ -147,11 +198,13 @@ const templateSteps: Record<string, PipelineStep[]> = {
       type: 'test',
     },
     {
-      id: 'deploy',
-      name: 'Deploy',
-      description: 'Deploy to production',
-      command: 'docker build -t myapp . && docker push myapp',
+      id: 'deployment',
+      name: 'Deployment',
+      description: 'Deploy application to target environment',
+      command: 'pkill -f "node.*src/server.js" || true && npm install && npm start',  // Kill any existing process, install dependencies and start app
       type: 'deploy',
+      automatic: true,
+      runOnDeployedInstance: true,  // Ensure this runs on the deployed instance
     },
   ],
   rust: [
@@ -168,6 +221,15 @@ const templateSteps: Record<string, PipelineStep[]> = {
       description: 'Run test suite',
       command: 'cargo test',
       type: 'test',
+    },
+    {
+      id: 'deployment',
+      name: 'Deployment',
+      description: 'Deploy application to target environment',
+      command: './target/release/app',  // Start the application as part of deployment
+      type: 'deploy',
+      automatic: true,
+      runOnDeployedInstance: true,
     },
   ],
   docker: [
@@ -186,11 +248,13 @@ const templateSteps: Record<string, PipelineStep[]> = {
       type: 'test',
     },
     {
-      id: 'deploy',
-      name: 'Deploy',
-      description: 'Push Docker image',
-      command: 'docker push $IMAGE_NAME',
+      id: 'deployment',
+      name: 'Deployment',
+      description: 'Deploy application to target environment',
+      command: 'docker run -d -p 8080:8080 $IMAGE_NAME',  // Start container as part of deployment
       type: 'deploy',
+      automatic: true,
+      runOnDeployedInstance: true,
     },
   ],
 };
@@ -318,16 +382,23 @@ const SortableStepItem: React.FC<SortableStepItemProps> = ({
             <div>
               <CardTitle className="text-sm">{step.name}</CardTitle>
               <CardDescription className="text-xs">{step.description}</CardDescription>
+              {step.automatic && (
+                <span className="inline-flex items-center px-2 py-1 mt-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                  Automatic
+                </span>
+              )}
             </div>
           </div>
           <div className="flex gap-2">
-            <Button 
-              variant="ghost" 
-              size="sm"
-              onClick={() => onEdit(step)}
-            >
-              Edit
-            </Button>
+            {!step.automatic && (
+              <Button 
+                variant="ghost" 
+                size="sm"
+                onClick={() => onEdit(step)}
+              >
+                Edit
+              </Button>
+            )}
             {step.type !== 'source' && (
               <Button 
                 variant="ghost" 
@@ -341,10 +412,16 @@ const SortableStepItem: React.FC<SortableStepItemProps> = ({
           </div>
         </div>
         <div className="mt-2">
-          <div className="flex items-center text-sm text-muted-foreground">
-            <Terminal className="w-4 h-4 mr-1" />
-            <code className="bg-muted px-2 py-1 rounded">{step.command}</code>
-          </div>
+          {!step.automatic ? (
+            <div className="flex items-center text-sm text-muted-foreground">
+              <Terminal className="w-4 h-4 mr-1" />
+              <code className="bg-muted px-2 py-1 rounded">{step.command}</code>
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground italic">
+              This step is handled automatically by the pipeline manager
+            </div>
+          )}
           {step.type === 'source' && environmentVariables.length > 0 && (
             <div className="mt-2">
               <h4 className="text-sm font-medium mb-1">Environment Variables Available</h4>
@@ -403,6 +480,18 @@ const PipelineCreationForm = () => {
         ],
         maxStorageGB: 10
       }
+    },
+    deployment: {
+      enabled: false,
+      platform: 'aws',
+      config: {
+        region: '',
+        service: '',
+        cluster: '',
+        namespace: '',
+        credentials: '',
+        customSettings: {}
+      }
     }
   });
 
@@ -418,6 +507,8 @@ const PipelineCreationForm = () => {
   });
   const [newPattern, setNewPattern] = useState('');
   const [patternError, setPatternError] = useState('');
+  const sshKeyFileInputRef = useRef<HTMLInputElement>(null);
+  const [sshKeyFileName, setSshKeyFileName] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -470,9 +561,34 @@ const PipelineCreationForm = () => {
   };
 
   const handleTemplateSelect = (templateName: keyof typeof templateSteps) => {
+    // Get the template steps
+    const template = templateSteps[templateName];
+    
+    // Ensure the steps are in the correct order: source -> build -> deployment -> test
+    const sourceStep = defaultSteps[0]; // The source step
+    
+    // Find steps by type
+    const buildSteps = template.filter(step => step.type === 'build');
+    const deploymentSteps = template.filter(step => step.type === 'deploy' && step.automatic);
+    const testSteps = template.filter(step => step.type === 'test');
+    const otherSteps = template.filter(step => 
+      step.type !== 'build' && 
+      step.type !== 'deploy' && 
+      step.type !== 'test'
+    );
+    
+    // Combine steps in the desired order
+    const orderedSteps = [
+      sourceStep,
+      ...buildSteps,
+      ...testSteps,
+      ...deploymentSteps,
+      ...otherSteps
+    ];
+    
     setFormData((prev) => ({
       ...prev,
-      steps: [...defaultSteps, ...templateSteps[templateName]],
+      steps: orderedSteps,
     }));
   };
 
@@ -507,6 +623,12 @@ const PipelineCreationForm = () => {
 
   const handleStepSubmit = () => {
     if (editingStep) {
+      // Don't allow editing automatic steps
+      if (editingStep.automatic) {
+        setIsStepDialogOpen(false);
+        return;
+      }
+      
       // Update existing step
       setFormData(prev => ({
         ...prev,
@@ -520,7 +642,8 @@ const PipelineCreationForm = () => {
       // Add new step
       const newStep: PipelineStep = {
         ...stepForm,
-        id: crypto.randomUUID()
+        id: crypto.randomUUID(),
+        automatic: false // New steps are never automatic
       };
       setFormData(prev => ({
         ...prev,
@@ -559,34 +682,31 @@ const PipelineCreationForm = () => {
     if (formData.triggers.onPush) events.push('push');
     if (formData.triggers.onPullRequest) events.push('pull_request');
 
-    const apiSteps = formData.steps.map(step => ({
-      name: step.name,
-      command: step.command,
-      environment: step.type === 'source' ? envVars : undefined,
-      timeout: 3600
-    }));
-
-    const patterns = formData.artifacts.patterns.map(p => p.pattern);
-    const storageType: 'local' | 's3' = formData.artifacts.storage.type === 'aws_s3' ? 's3' : 'local';
-
-    const payload: PipelineApiPayload = {
+    return {
       name: formData.name,
       repository: formData.repositoryUrl,
       description: formData.description,
       defaultBranch: formData.branch,
-      steps: apiSteps,
-      triggers: {
+      steps: formData.steps.map(step => ({
+        name: step.name,
+        command: step.command,
+        environment: envVars,
+        runLocation: step.runOnDeployedInstance ? 'deployed' : 'local'
+      })),
+      triggers: events.length > 0 ? {
         events,
         branches: [formData.branch]
-      },
+      } : undefined,
+      githubToken: formData.triggers.onPush ? formData.githubToken : undefined,
       artifactsEnabled: formData.artifacts.enabled,
-      artifactPatterns: patterns,
+      artifactPatterns: formData.artifacts.patterns.map(p => p.pattern),
       artifactRetentionDays: formData.artifacts.retention.defaultDays,
-      artifactStorageType: storageType,
-      artifactStorageConfig: formData.artifacts.storage.config
+      artifactStorageType: formData.artifacts.storage.type === 'aws_s3' ? 's3' : 'local',
+      artifactStorageConfig: formData.artifacts.storage.config,
+      deploymentEnabled: formData.deployment.enabled,
+      deploymentPlatform: formData.deployment.platform,
+      deploymentConfig: formData.deployment.config
     };
-
-    return payload;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -671,6 +791,52 @@ const PipelineCreationForm = () => {
       }
     }));
   };
+  
+  const handleDeploymentChange = (field: keyof DeploymentConfig, value: any) => {
+    if (field === 'platform' && value === 'aws') {
+      // When AWS is selected, initialize with default service if none is set
+      setFormData(prev => ({
+        ...prev,
+        deployment: {
+          ...prev.deployment,
+          platform: value,
+          config: {
+            ...prev.deployment.config,
+            service: prev.deployment.config.service || 'lambda' // Set default service
+          }
+        }
+      }));
+    } else {
+      setFormData(prev => ({
+        ...prev,
+        deployment: {
+          ...prev.deployment,
+          [field]: value,
+          // Preserve config when changing platforms
+          config: prev.deployment.config
+        }
+      }));
+    }
+  };
+
+  const handleDeploymentConfigChange = (field: keyof DeploymentConfig['config'], value: string) => {
+    setFormData(prev => {
+      const newConfig = {
+        ...prev.deployment.config,
+        [field]: value
+      };
+
+      // We no longer need to change the platform when selecting EC2 service
+      // Just update the config with the new service value
+      return {
+        ...prev,
+        deployment: {
+          ...prev.deployment,
+          config: newConfig
+        }
+      };
+    });
+  };
 
   const handleAddPattern = (pattern: string) => {
     if (!pattern.trim()) {
@@ -704,6 +870,28 @@ const PipelineCreationForm = () => {
         patterns: prev.artifacts.patterns.filter((_, i) => i !== index)
       }
     }));
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setSshKeyFileName(file.name);
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      handleDeploymentConfigChange('ec2SshKey', content);
+    };
+    reader.readAsText(file);
+  };
+
+  const clearSshKeyFile = () => {
+    handleDeploymentConfigChange('ec2SshKey', '');
+    setSshKeyFileName(null);
+    if (sshKeyFileInputRef.current) {
+      sshKeyFileInputRef.current.value = '';
+    }
   };
 
   return (
@@ -746,6 +934,10 @@ const PipelineCreationForm = () => {
             <TabsTrigger value="artifacts" className="flex items-center gap-2">
               <Package size={16} />
               Artifacts
+            </TabsTrigger>
+            <TabsTrigger value="deployment" className="flex items-center gap-2">
+              <Rocket size={16} />
+              Deployment
             </TabsTrigger>
           </TabsList>
 
@@ -847,6 +1039,20 @@ const PipelineCreationForm = () => {
                 />
                 <span>On Push</span>
               </label>
+              {formData.triggers.onPush && (
+                <div className="ml-6 mt-2">
+                  <label className="block text-sm font-medium mb-1">GitHub Personal Access Token</label>
+                  <Input
+                    type="password"
+                    placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                    value={formData.githubToken || ''}
+                    onChange={(e) => handleInputChange('githubToken', e.target.value)}
+                  />
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Required for webhook creation. Token must have 'repo' and 'admin:repo_hook' scopes.
+                  </p>
+                </div>
+              )}
               <label className="flex items-center space-x-2">
                 <input
                   type="checkbox"
@@ -1124,6 +1330,314 @@ const PipelineCreationForm = () => {
                           />
                         </div>
                       </div>
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="deployment" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Deployment Configuration</CardTitle>
+                <CardDescription>Configure how your application is deployed</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>Enable Deployment</Label>
+                    <div className="text-sm text-muted-foreground">Configure deployment options for this pipeline</div>
+                  </div>
+                  <Switch
+                    checked={formData.deployment.enabled}
+                    onCheckedChange={(checked: boolean) => handleDeploymentChange('enabled', checked)}
+                  />
+                </div>
+
+                {formData.deployment.enabled && (
+                  <>
+                    <Separator />
+                    
+                    <div className="space-y-4">
+                      <div>
+                        <Label>Deployment Platform</Label>
+                        <Select
+                          value={formData.deployment.platform}
+                          onValueChange={(value: DeploymentConfig['platform']) => 
+                            handleDeploymentChange('platform', value)}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select deployment platform" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="aws">AWS</SelectItem>
+                            <SelectItem value="gcp">Google Cloud Platform</SelectItem>
+                            <SelectItem value="azure">Azure</SelectItem>
+                            <SelectItem value="kubernetes">Kubernetes</SelectItem>
+                            <SelectItem value="custom">Custom</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <Separator />
+
+                      {formData.deployment.platform === 'aws' && (
+                        <div className="space-y-4">
+                          <div>
+                            <Label>AWS Region</Label>
+                            <Input
+                              value={formData.deployment.config.region || ''}
+                              onChange={(e) => handleDeploymentConfigChange('region', e.target.value)}
+                              placeholder="us-east-1"
+                            />
+                          </div>
+                          <div>
+                            <Label>AWS Service</Label>
+                            <Select 
+                              value={formData.deployment.config.service || 'lambda'}
+                              onValueChange={(value) => handleDeploymentConfigChange('service', value)}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select AWS service" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="lambda">Lambda</SelectItem>
+                                <SelectItem value="ecs">ECS</SelectItem>
+                                <SelectItem value="ec2">EC2</SelectItem>
+                                <SelectItem value="s3">S3 Static Website</SelectItem>
+                                <SelectItem value="elasticbeanstalk">Elastic Beanstalk</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          {formData.deployment.config.service === 'ec2' && (
+                            <>
+                              <div>
+                                <Label>AWS Access Key ID</Label>
+                                <Input
+                                  type="password"
+                                  value={formData.deployment.config.awsAccessKeyId || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('awsAccessKeyId', e.target.value)}
+                                  placeholder="AWS Access Key ID"
+                                />
+                              </div>
+                              <div>
+                                <Label>AWS Secret Access Key</Label>
+                                <Input
+                                  type="password"
+                                  value={formData.deployment.config.awsSecretAccessKey || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('awsSecretAccessKey', e.target.value)}
+                                  placeholder="AWS Secret Access Key"
+                                />
+                              </div>
+                              <div>
+                                <Label>EC2 Instance ID</Label>
+                                <Input
+                                  value={formData.deployment.config.ec2InstanceId || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('ec2InstanceId', e.target.value)}
+                                  placeholder="i-1234567890abcdef0"
+                                />
+                              </div>
+                              <div>
+                                <Label>EC2 Deploy Path</Label>
+                                <Input
+                                  value={formData.deployment.config.ec2DeployPath || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('ec2DeployPath', e.target.value)}
+                                  placeholder="/home/ec2-user/app"
+                                />
+                                <p className="text-sm text-muted-foreground mt-1">
+                                  Path where the application will be deployed on the EC2 instance
+                                </p>
+                              </div>
+                              <div>
+                                <Label>EC2 SSH Key</Label>
+                                <div className="space-y-2">
+                                  <div className="flex flex-col gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <Button 
+                                        type="button" 
+                                        variant="outline"
+                                        onClick={() => sshKeyFileInputRef.current?.click()}
+                                      >
+                                        Upload .pem File
+                                      </Button>
+                                      <input
+                                        type="file"
+                                        ref={sshKeyFileInputRef}
+                                        className="hidden"
+                                        accept=".pem"
+                                        onChange={handleFileUpload}
+                                      />
+                                      {sshKeyFileName ? (
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-sm text-green-600">
+                                            {sshKeyFileName}
+                                          </span>
+                                          <Button 
+                                            type="button" 
+                                            variant="ghost" 
+                                            size="sm"
+                                            onClick={clearSshKeyFile}
+                                          >
+                                            <Trash2 className="h-4 w-4" />
+                                          </Button>
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                    <Textarea
+                                      value={formData.deployment.config.ec2SshKey || ''}
+                                      onChange={(e) => handleDeploymentConfigChange('ec2SshKey', e.target.value)}
+                                      placeholder="-----BEGIN RSA PRIVATE KEY-----"
+                                      rows={3}
+                                    />
+                                  </div>
+                                  <p className="text-sm text-muted-foreground">
+                                    Upload your .pem file or paste the private SSH key for connecting to the EC2 instance
+                                  </p>
+                                </div>
+                              </div>
+                              <div>
+                                <Label>EC2 Username</Label>
+                                <Input
+                                  value={formData.deployment.config.ec2Username || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('ec2Username', e.target.value)}
+                                  placeholder="ec2-user"
+                                />
+                                <p className="text-sm text-muted-foreground mt-1">
+                                  Default username for the EC2 instance (e.g., ec2-user, ubuntu)
+                                </p>
+                              </div>
+                            </>
+                          )}
+
+                          <div>
+                            <Label>Credentials ID</Label>
+                            <Input
+                              value={formData.deployment.config.credentials || ''}
+                              onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
+                              placeholder="aws-credentials"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {formData.deployment.platform === 'gcp' && (
+                        <div className="space-y-4">
+                          <div>
+                            <Label>GCP Region</Label>
+                            <Input
+                              value={formData.deployment.config.region || ''}
+                              onChange={(e) => handleDeploymentConfigChange('region', e.target.value)}
+                              placeholder="us-central1"
+                            />
+                          </div>
+                          <div>
+                            <Label>GCP Service</Label>
+                            <Select defaultValue="cloudfunctions">
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select GCP service" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="cloudfunctions">Cloud Functions</SelectItem>
+                                <SelectItem value="cloudrun">Cloud Run</SelectItem>
+                                <SelectItem value="gke">GKE</SelectItem>
+                                <SelectItem value="appengine">App Engine</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div>
+                            <Label>Credentials ID</Label>
+                            <Input
+                              value={formData.deployment.config.credentials || ''}
+                              onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
+                              placeholder="gcp-credentials"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {formData.deployment.platform === 'azure' && (
+                        <div className="space-y-4">
+                          <div>
+                            <Label>Azure Region</Label>
+                            <Input
+                              value={formData.deployment.config.region || ''}
+                              onChange={(e) => handleDeploymentConfigChange('region', e.target.value)}
+                              placeholder="eastus"
+                            />
+                          </div>
+                          <div>
+                            <Label>Azure Service</Label>
+                            <Select defaultValue="functions">
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select Azure service" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="functions">Azure Functions</SelectItem>
+                                <SelectItem value="appservice">App Service</SelectItem>
+                                <SelectItem value="aks">AKS</SelectItem>
+                                <SelectItem value="containerinstances">Container Instances</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div>
+                            <Label>Credentials ID</Label>
+                            <Input
+                              value={formData.deployment.config.credentials || ''}
+                              onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
+                              placeholder="azure-credentials"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {formData.deployment.platform === 'kubernetes' && (
+                        <div className="space-y-4">
+                          <div>
+                            <Label>Kubernetes Cluster</Label>
+                            <Input
+                              value={formData.deployment.config.cluster || ''}
+                              onChange={(e) => handleDeploymentConfigChange('cluster', e.target.value)}
+                              placeholder="my-cluster"
+                            />
+                          </div>
+                          <div>
+                            <Label>Namespace</Label>
+                            <Input
+                              value={formData.deployment.config.namespace || ''}
+                              onChange={(e) => handleDeploymentConfigChange('namespace', e.target.value)}
+                              placeholder="default"
+                            />
+                          </div>
+                          <div>
+                            <Label>Credentials ID</Label>
+                            <Input
+                              value={formData.deployment.config.credentials || ''}
+                              onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
+                              placeholder="kubeconfig"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {formData.deployment.platform === 'custom' && (
+                        <div className="space-y-4">
+                          <div>
+                            <Label>Custom Deployment Configuration</Label>
+                            <p className="text-sm text-muted-foreground mb-2">
+                              Define your custom deployment settings. These will be available as environment variables in your deployment step.
+                            </p>
+                            <div className="space-y-2">
+                              <div className="flex gap-2">
+                                <Input placeholder="Key" />
+                                <Input placeholder="Value" />
+                                <Button type="button">Add</Button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </>
                 )}

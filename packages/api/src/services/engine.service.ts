@@ -10,6 +10,8 @@ import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as mime from 'mime-types';
 import { prisma } from '../db';
+import { DeploymentService } from './deployment.service';
+import { db } from './database.service';
 
 export const buildEvents = new EventEmitter();
 
@@ -42,16 +44,6 @@ export class EngineService {
 
   constructor(coreEngineUrl: string) {
     this.artifactsBaseDir = process.env.ARTIFACTS_ROOT || '/tmp/lightci/artifacts';
-  }
-
-  async listPipelines(options: PaginationOptions): Promise<PaginatedResult<Pipeline>> {
-    // TODO: Implement filesystem-based pipeline listing
-    return {
-      items: [],
-      total: 0,
-      page: options.page,
-      limit: options.limit,
-    };
   }
 
   async createPipeline(config: PipelineConfig & { workspaceId: string }): Promise<Pipeline> {
@@ -263,21 +255,6 @@ export class EngineService {
     }
   }
 
-  async listBuilds(options: PaginationOptions): Promise<PaginatedResult<Build>> {
-    // TODO: Implement filesystem-based build listing
-    return {
-      items: [],
-      total: 0,
-      page: options.page,
-      limit: options.limit,
-    };
-  }
-
-  async createBuild(config: BuildConfig): Promise<Build> {
-    // TODO: Implement filesystem-based build creation
-    throw new Error('Not implemented');
-  }
-
   async getBuild(id: string): Promise<Build | null> {
     try {
       // First try to find a pipeline run with this ID
@@ -387,44 +364,62 @@ export class EngineService {
       console.log(`[EngineService] Getting artifact with ID: ${id}`);
       
       // ID format is "{buildId}-{base64EncodedPath}"
-      const [buildId, encodedPath] = id.split('-');
-      if (!buildId || !encodedPath) {
+      // Find the position of the first hyphen after the UUID
+      const uuidLength = 36; // Standard UUID length
+      const splitIndex = id.indexOf('-', uuidLength);
+      
+      if (splitIndex === -1) {
         console.log(`[EngineService] Invalid artifact ID format: ${id}`);
         return null;
       }
 
-      const relativePath = Buffer.from(encodedPath, 'base64').toString();
-      console.log(`[EngineService] Decoded path: ${relativePath}`);
+      const buildId = id.substring(0, uuidLength);
+      const encodedPath = id.substring(splitIndex + 1);
       
-      // Get the pipeline run from the database
-      const run = await prisma.pipelineRun.findUnique({
-        where: { id: buildId }
-      });
-      console.log(`[EngineService] Pipeline run lookup result:`, run);
+      console.log(`[EngineService] Split ID into buildId: ${buildId}, encodedPath: ${encodedPath}`);
 
-      if (!run || !run.artifactsPath || !run.artifactsCollected) {
-        console.log(`[EngineService] Run not found or artifacts not available for ID: ${buildId}`);
+      try {
+        const relativePath = Buffer.from(encodedPath, 'base64').toString('utf-8');
+        console.log(`[EngineService] Decoded path: ${relativePath}`);
+        
+        // Get the pipeline run from the database
+        const run = await prisma.pipelineRun.findUnique({
+          where: { id: buildId }
+        });
+        console.log(`[EngineService] Pipeline run lookup result:`, run);
+
+        if (!run || !run.artifactsCollected) {
+          console.log(`[EngineService] Run not found or artifacts not collected for ID: ${buildId}`);
+          return null;
+        }
+
+        // Ensure we have the full absolute path
+        const artifactsPath = run.artifactsPath && path.isAbsolute(run.artifactsPath)
+          ? run.artifactsPath
+          : path.join(this.artifactsBaseDir, buildId);
+
+        const fullPath = path.join(artifactsPath, relativePath);
+        console.log(`[EngineService] Full artifact path: ${fullPath}`);
+        
+        // Check if file exists and get its stats
+        const stats = await fsPromises.stat(fullPath);
+        
+        const artifact = {
+          id,
+          buildId,
+          name: path.basename(fullPath),
+          path: relativePath,
+          size: stats.size,
+          contentType: mime.lookup(fullPath) || undefined,
+          createdAt: stats.birthtime
+        };
+        
+        console.log(`[EngineService] Found artifact:`, artifact);
+        return artifact;
+      } catch (decodeError) {
+        console.error('[EngineService] Error decoding path:', decodeError);
         return null;
       }
-
-      const fullPath = path.join(run.artifactsPath, relativePath);
-      console.log(`[EngineService] Full artifact path: ${fullPath}`);
-      
-      // Check if file exists and get its stats
-      const stats = await fsPromises.stat(fullPath);
-      
-      const artifact = {
-        id,
-        buildId,
-        name: path.basename(fullPath),
-        path: relativePath,
-        size: stats.size,
-        contentType: mime.lookup(fullPath) || undefined,
-        createdAt: stats.birthtime
-      };
-      
-      console.log(`[EngineService] Found artifact:`, artifact);
-      return artifact;
     } catch (error) {
       console.error('[EngineService] Error getting artifact:', error);
       return null;
@@ -449,5 +444,84 @@ export class EngineService {
     
     await walk(dir);
     return files;
+  }
+
+  async getPipelineRun(id: string) {
+    try {
+      const run = await prisma.pipelineRun.findUnique({
+        where: { id }
+      });
+      return run;
+    } catch (error) {
+      console.error('[EngineService] Error getting pipeline run:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Handle a pipeline run completion and trigger deployment if configured
+   */
+  async handlePipelineRunCompletion(runId: string): Promise<void> {
+    console.log(`[EngineService] Handling pipeline run completion for run ${runId}`);
+    try {
+      // Get the run and pipeline
+      console.log(`[EngineService] Fetching pipeline run ${runId} details`);
+      const run = await prisma.pipelineRun.findUnique({
+        where: { id: runId },
+        include: { pipeline: true }
+      });
+      
+      if (!run) {
+        console.error(`[EngineService] Cannot handle completion for run ${runId}: Run not found`);
+        return;
+      }
+      
+      console.log(`[EngineService] Found pipeline run ${runId} with status ${run.status} for pipeline ${run.pipelineId}`);
+      
+      // Check if the run is completed successfully
+      if (run.status !== 'completed') {
+        console.log(`[EngineService] Not triggering deployment for run ${runId}: Status is ${run.status}, not completed`);
+        return;
+      }
+      
+      // Check if the pipeline has deployment enabled
+      if (!run.pipeline.deploymentEnabled) {
+        console.log(`[EngineService] Deployment not enabled for pipeline ${run.pipelineId}`);
+        return;
+      }
+      
+      console.log(`[EngineService] Deployment is enabled for pipeline ${run.pipelineId}`);
+      
+      // Check if we have a deployment platform configured
+      if (!run.pipeline.deploymentPlatform) {
+        console.log(`[EngineService] No deployment platform configured for pipeline ${run.pipelineId}`);
+        return;
+      }
+      
+      console.log(`[EngineService] Triggering deployment for run ${runId} on platform ${run.pipeline.deploymentPlatform}`);
+      
+      // Initialize deployment service
+      console.log(`[EngineService] Initializing DeploymentService`);
+      const deploymentService = new DeploymentService();
+      
+      // Trigger deployment asynchronously
+      // Note: We don't await this to avoid blocking the caller, but we still handle errors
+      console.log(`[EngineService] Calling deployPipelineRun asynchronously for run ${runId}`);
+      deploymentService.deployPipelineRun(runId)
+        .then(result => {
+          console.log(`[EngineService] Deployment for run ${runId} completed with status: ${result.success ? 'success' : 'failure'}`);
+          if (!result.success) {
+            console.error(`[EngineService] Deployment failed: ${result.message}`);
+          }
+        })
+        .catch(error => {
+          console.error(`[EngineService] Error during deployment for run ${runId}:`, error);
+        });
+      
+      console.log(`[EngineService] Deployment for run ${runId} triggered in the background`);
+    } catch (error) {
+      console.error(`[EngineService] Error handling pipeline run completion:`, error);
+      throw error;
+    }
   }
 }

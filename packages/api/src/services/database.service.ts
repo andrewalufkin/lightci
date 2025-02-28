@@ -15,20 +15,24 @@ export interface PipelineStep {
 export interface DatabasePipeline {
   id: string;
   name: string;
-  description?: string;
   repository: string;
+  description?: string;
   defaultBranch: string;
-  steps: PipelineStep[];
-  triggers?: Record<string, any>;
-  schedule?: Record<string, any>;
-  artifactsEnabled: boolean;
-  artifactPatterns: string[];
-  artifactRetentionDays: number;
-  artifactStorageType: string;
-  artifactStorageConfig: Record<string, any>;
+  steps: any;
+  triggers?: any;
+  schedule?: any;
+  webhookConfig?: any;
   status: string;
   createdAt: Date;
   updatedAt: Date;
+  artifactsEnabled: boolean;
+  artifactPatterns?: any;
+  artifactRetentionDays: number;
+  artifactStorageType: string;
+  artifactStorageConfig?: any;
+  deploymentEnabled: boolean;
+  deploymentPlatform?: string;
+  deploymentConfig?: any;
 }
 
 export class DatabaseService {
@@ -39,17 +43,21 @@ export class DatabaseService {
       repository: dbPipeline.repository,
       description: dbPipeline.description,
       defaultBranch: dbPipeline.defaultBranch,
-      steps: typeof dbPipeline.steps === 'string' ? JSON.parse(dbPipeline.steps) : dbPipeline.steps,
-      triggers: typeof dbPipeline.triggers === 'string' ? JSON.parse(dbPipeline.triggers) : dbPipeline.triggers,
-      schedule: typeof dbPipeline.schedule === 'string' ? JSON.parse(dbPipeline.schedule) : dbPipeline.schedule,
-      artifactsEnabled: dbPipeline.artifactsEnabled,
-      artifactPatterns: typeof dbPipeline.artifactPatterns === 'string' ? JSON.parse(dbPipeline.artifactPatterns) : dbPipeline.artifactPatterns,
-      artifactRetentionDays: dbPipeline.artifactRetentionDays,
-      artifactStorageType: dbPipeline.artifactStorageType,
-      artifactStorageConfig: typeof dbPipeline.artifactStorageConfig === 'string' ? JSON.parse(dbPipeline.artifactStorageConfig) : dbPipeline.artifactStorageConfig,
+      steps: dbPipeline.steps,
+      triggers: dbPipeline.triggers,
+      schedule: dbPipeline.schedule,
+      webhookConfig: dbPipeline.webhookConfig,
       status: dbPipeline.status,
       createdAt: dbPipeline.createdAt,
-      updatedAt: dbPipeline.updatedAt
+      updatedAt: dbPipeline.updatedAt,
+      artifactsEnabled: dbPipeline.artifactsEnabled,
+      artifactPatterns: dbPipeline.artifactPatterns,
+      artifactRetentionDays: dbPipeline.artifactRetentionDays,
+      artifactStorageType: dbPipeline.artifactStorageType,
+      artifactStorageConfig: dbPipeline.artifactStorageConfig,
+      deploymentEnabled: dbPipeline.deploymentEnabled,
+      deploymentPlatform: dbPipeline.deploymentPlatform,
+      deploymentConfig: dbPipeline.deploymentConfig
     };
   }
 
@@ -101,11 +109,20 @@ export class DatabaseService {
         steps: JSON.stringify(pipeline.steps),
         triggers: pipeline.triggers ? JSON.stringify(pipeline.triggers) : undefined,
         schedule: pipeline.schedule ? JSON.stringify(pipeline.schedule) : undefined,
+        webhookConfig: pipeline.webhookConfig ? JSON.stringify(pipeline.webhookConfig) : undefined,
+        
+        // Artifact configuration
         artifactsEnabled: pipeline.artifactsEnabled ?? true,
         artifactPatterns: JSON.stringify(pipeline.artifactPatterns ?? []),
         artifactRetentionDays: pipeline.artifactRetentionDays ?? 30,
         artifactStorageType: pipeline.artifactStorageType ?? 'local',
         artifactStorageConfig: JSON.stringify(pipeline.artifactStorageConfig ?? {}),
+        
+        // Deployment configuration
+        deploymentEnabled: pipeline.deploymentEnabled ?? false,
+        deploymentPlatform: pipeline.deploymentPlatform,
+        deploymentConfig: pipeline.deploymentConfig ? JSON.stringify(pipeline.deploymentConfig) : JSON.stringify({}),
+        
         status: 'created'
       }
     });
@@ -130,11 +147,18 @@ export class DatabaseService {
     if (pipeline.steps) data.steps = JSON.stringify(pipeline.steps);
     if (pipeline.triggers) data.triggers = JSON.stringify(pipeline.triggers);
     if (pipeline.schedule) data.schedule = JSON.stringify(pipeline.schedule);
+    
+    // Artifact configuration
     if (pipeline.artifactsEnabled !== undefined) data.artifactsEnabled = pipeline.artifactsEnabled;
     if (pipeline.artifactPatterns) data.artifactPatterns = JSON.stringify(pipeline.artifactPatterns);
     if (pipeline.artifactRetentionDays !== undefined) data.artifactRetentionDays = pipeline.artifactRetentionDays;
     if (pipeline.artifactStorageType) data.artifactStorageType = pipeline.artifactStorageType;
     if (pipeline.artifactStorageConfig) data.artifactStorageConfig = JSON.stringify(pipeline.artifactStorageConfig);
+    
+    // Deployment configuration
+    if (pipeline.deploymentEnabled !== undefined) data.deploymentEnabled = pipeline.deploymentEnabled;
+    if (pipeline.deploymentPlatform !== undefined) data.deploymentPlatform = pipeline.deploymentPlatform;
+    if (pipeline.deploymentConfig) data.deploymentConfig = JSON.stringify(pipeline.deploymentConfig);
 
     const updated = await prisma.pipeline.update({
       where: { id },

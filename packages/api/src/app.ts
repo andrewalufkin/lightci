@@ -2,20 +2,41 @@ import express from 'express';
 import cors from 'cors';
 import { pipelineRouter } from './routes/pipelines.js';
 import { pipelineRunRouter } from './routes/pipeline-runs.js';
+import { artifactRouter } from './routes/artifacts.js';
+import { deploymentRouter } from './routes/deployments';
+import { webhookRouter } from './routes/webhooks';
+import authRouter from './routes/auth.routes';
 import { AuthenticationError, NotFoundError, ValidationError } from './utils/errors.js';
 import { scheduleArtifactCleanup } from './services/artifact-cleanup.service';
+import { PipelineStateService } from './services/pipeline-state.service';
 
 const app = express();
+const pipelineStateService = new PipelineStateService();
 
-// Initialize artifact cleanup service
+// Initialize services
 scheduleArtifactCleanup();
+pipelineStateService.recoverStuckPipelines();
+
+// Handle graceful shutdown
+const cleanup = async () => {
+  console.log('Received shutdown signal. Cleaning up...');
+  await pipelineStateService.cleanupRunningPipelines();
+  process.exit(0);
+};
+
+process.on('SIGTERM', cleanup);
+process.on('SIGINT', cleanup);
 
 app.use(cors());
 app.use(express.json());
 
-// API routes
+// Routes
+app.use('/api/auth', authRouter);
 app.use('/api/pipelines', pipelineRouter);
-app.use('/api/runs', pipelineRunRouter);
+app.use('/api/pipeline-runs', pipelineRunRouter);
+app.use('/api/artifacts', artifactRouter);
+app.use('/api/deployments', deploymentRouter);
+app.use('/api/webhooks', webhookRouter);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

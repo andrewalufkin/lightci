@@ -29,4 +29,10 @@ router.get('/:id/artifacts',
   pipelineRunController.getRunArtifacts.bind(pipelineRunController)
 );
 
+// Update pipeline run status
+router.put('/:id/status',
+  authenticate,
+  pipelineRunController.updateRunStatus.bind(pipelineRunController)
+);
+
 export const pipelineRunRouter = router; 

@@ -10,4 +10,6 @@ export interface Step {
   exitCode?: number;
   environment?: Record<string, string>;
   error?: string;
+  runOnDeployedInstance?: boolean;
+  runLocation?: 'local' | 'deployed';
 }

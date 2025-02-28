@@ -3,49 +3,111 @@ import CreatePipeline from '@/pages/CreatePipeline';
 import PipelinesPage from '@/pages/PipelinesPage';
 import PipelineSettings from '@/pages/PipelineSettings';
 import PipelineHistory from '@/pages/PipelineHistory';
-import { useEffect } from 'react';
+import Login from '@/pages/Login';
+import Register from '@/pages/Register';
+import { AuthProvider } from '@/lib/auth.context';
+import ProtectedRoute from '@/components/ProtectedRoute';
 import { Toaster } from 'sonner';
+import { useAuth } from '@/lib/auth.context';
 
-function App() {
-  useEffect(() => {
-    console.log('App component mounted');
-  }, []);
-
-  console.log('App component rendering');
+function Header() {
+  const { user, logout } = useAuth();
 
   return (
-    <Router>
-      <div className="relative min-h-screen bg-background">
-        <Toaster position="top-right" />
-        <header className="sticky top-0 z-50 bg-white border-b">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex justify-between items-center h-16">
-              <Link 
-                to="/" 
-                className="text-xl font-bold text-blue-600 hover:text-blue-700"
+    <header className="sticky top-0 z-50 bg-white border-b">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex justify-between items-center h-16">
+          <Link 
+            to="/" 
+            className="text-xl font-bold text-blue-600 hover:text-blue-700"
+          >
+            LightCI
+          </Link>
+          {user ? (
+            <div className="flex items-center space-x-4">
+              <span className="text-sm text-gray-700">
+                {user.email}
+              </span>
+              <button
+                onClick={logout}
+                className="text-sm text-gray-600 hover:text-gray-900"
               >
-                LightCI
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center space-x-4">
+              <Link
+                to="/login"
+                className="text-sm text-gray-600 hover:text-gray-900"
+              >
+                Sign in
               </Link>
               <Link
-                to="/pipelines/new"
-                className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
+                to="/register"
+                className="text-sm bg-blue-600 text-white px-3 py-2 rounded-md hover:bg-blue-700"
               >
-                New Pipeline
+                Sign up
               </Link>
             </div>
-          </div>
-        </header>
-
-        <main>
-          <Routes>
-            <Route path="/pipelines/new" element={<CreatePipeline />} />
-            <Route path="/pipelines/:id/settings" element={<PipelineSettings />} />
-            <Route path="/pipelines/:id/history" element={<PipelineHistory />} />
-            <Route path="/" element={<PipelinesPage />} />
-          </Routes>
-        </main>
+          )}
+        </div>
       </div>
-    </Router>
+    </header>
+  );
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <Router>
+        <div className="relative min-h-screen bg-background">
+          <Toaster position="top-right" />
+          <Header />
+          <main>
+            <Routes>
+              {/* Public routes */}
+              <Route path="/login" element={<Login />} />
+              <Route path="/register" element={<Register />} />
+
+              {/* Protected routes */}
+              <Route
+                path="/pipelines/new"
+                element={
+                  <ProtectedRoute>
+                    <CreatePipeline />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/pipelines/:id/settings"
+                element={
+                  <ProtectedRoute>
+                    <PipelineSettings />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/pipelines/:id/history"
+                element={
+                  <ProtectedRoute>
+                    <PipelineHistory />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/"
+                element={
+                  <ProtectedRoute>
+                    <PipelinesPage />
+                  </ProtectedRoute>
+                }
+              />
+            </Routes>
+          </main>
+        </div>
+      </Router>
+    </AuthProvider>
   );
 }
 
