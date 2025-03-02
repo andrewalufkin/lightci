@@ -39,12 +39,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = (newToken: string, userData: User) => {
+    console.log('[Debug] Setting new token:', newToken ? 'Present' : 'Not found');
     setStoredToken(newToken);
     setToken(newToken);
     setUser(userData);
   };
 
   const logout = () => {
+    console.log('[Debug] Removing token from storage');
     removeStoredToken();
     setToken(null);
     setUser(null);

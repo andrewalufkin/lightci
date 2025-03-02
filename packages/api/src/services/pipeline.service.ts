@@ -6,16 +6,19 @@ import { PrismaClient } from '@prisma/client';
 import { DatabasePipeline } from './database.service';
 import { EngineService } from './engine.service';
 import { GitHubService } from '../services/github.service';
+import { SchedulerService } from './scheduler.service';
 
 const prisma = new PrismaClient();
 
 export class PipelineService {
   private githubService: GitHubService;
   private engineService: EngineService;
+  private schedulerService?: SchedulerService;
 
-  constructor(engineService: EngineService) {
+  constructor(engineService: EngineService, schedulerService?: SchedulerService) {
     this.githubService = new GitHubService(process.env.API_BASE_URL || 'http://localhost:3000');
     this.engineService = engineService;
+    this.schedulerService = schedulerService;
   }
 
   private async transformToModelPipeline(dbPipeline: DatabasePipeline): Promise<Pipeline> {
@@ -149,8 +152,11 @@ export class PipelineService {
     };
   }
 
-  async listPipelines(options: { page: number; limit: number; filter?: string; sort?: string; }): Promise<PaginatedResult<Pipeline>> {
-    const pipelines = await db.listPipelines(options);
+  async listPipelines(options: { page: number; limit: number; filter?: string; sort?: string; userId: string; }): Promise<PaginatedResult<Pipeline>> {
+    const pipelines = await db.listPipelines({
+      ...options,
+      where: { createdById: options.userId }
+    });
     const transformedPipelines = await Promise.all(pipelines.items.map(p => this.transformToModelPipeline(p)));
     return {
       ...pipelines,
@@ -158,13 +164,13 @@ export class PipelineService {
     };
   }
 
-  async getPipeline(id: string): Promise<Pipeline | null> {
-    const pipeline = await db.getPipeline(id);
+  async getPipeline(id: string, userId: string): Promise<Pipeline | null> {
+    const pipeline = await db.getPipeline(id, userId);
     if (!pipeline) return null;
     return this.transformToModelPipeline(pipeline);
   }
 
-  async createPipeline(config: PipelineConfig): Promise<Pipeline> {
+  async createPipeline(config: PipelineConfig, userId: string): Promise<Pipeline> {
     // Validate artifact storage configuration
     if (config.artifactStorageType === 's3') {
       if (!config.artifactStorageConfig?.bucketName) {
@@ -209,6 +215,7 @@ export class PipelineService {
       repository: config.repository,
       description: config.description,
       defaultBranch: config.defaultBranch || 'main',
+      createdById: userId,
       steps: config.steps.map(step => ({
         id: step.name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
         name: step.name,
@@ -237,7 +244,13 @@ export class PipelineService {
     return this.transformToModelPipeline(created);
   }
 
-  async updatePipeline(id: string, config: PipelineConfig): Promise<Pipeline> {
+  async updatePipeline(id: string, config: PipelineConfig, userId: string): Promise<Pipeline> {
+    // First check if the user owns this pipeline
+    const existingPipeline = await db.getPipeline(id, userId);
+    if (!existingPipeline) {
+      throw new Error('Pipeline not found or access denied');
+    }
+
     // Validate artifact storage configuration
     if (config.artifactStorageType === 's3') {
       if (!config.artifactStorageConfig?.bucketName) {
@@ -264,6 +277,7 @@ export class PipelineService {
         runOnDeployedInstance: step.runOnDeployedInstance,
         runLocation: step.runLocation
       })),
+      schedule: config.schedule,
       
       // Artifact configuration
       artifactsEnabled: config.artifactsEnabled ?? true,
@@ -279,45 +293,22 @@ export class PipelineService {
     };
 
     const updated = await db.updatePipeline(id, pipeline);
-    return this.transformToModelPipeline(updated);
+    const modelPipeline = await this.transformToModelPipeline(updated);
+
+    // Update schedule if scheduler service is available
+    if (this.schedulerService && modelPipeline.schedule) {
+      await this.schedulerService.updatePipelineSchedule(modelPipeline);
+    }
+
+    return modelPipeline;
   }
 
-  async deletePipeline(id: string): Promise<void> {
-    try {
-      // First, get the pipeline to ensure it exists
-      const pipeline = await prisma.pipeline.findUnique({
-        where: { id }
-      });
-
-      if (!pipeline) {
-        throw new Error('Pipeline not found');
-      }
-
-      // Delete webhook if it exists
-      const webhookConfig = pipeline.webhookConfig ? (typeof pipeline.webhookConfig === 'string' ? JSON.parse(pipeline.webhookConfig) : pipeline.webhookConfig) : undefined;
-      if (webhookConfig?.github?.id) {
-        try {
-          // Since we don't store the token, we'll need to use the environment variable as fallback
-          const token = process.env.GITHUB_TOKEN;
-          if (!token) {
-            console.warn('No GitHub token available to delete webhook');
-          } else {
-            await this.githubService.deleteWebhook(pipeline.repository, webhookConfig.github.id, token);
-          }
-        } catch (error) {
-          console.error('Failed to delete GitHub webhook:', error);
-          // Continue with pipeline deletion even if webhook deletion fails
-        }
-      }
-
-      // Clean up filesystem resources and runs
-      await this.engineService.deletePipeline(id);
-
-      // Delete from database
-      await db.deletePipeline(id);
-    } catch (error) {
-      console.error(`[PipelineService] Error deleting pipeline ${id}:`, error);
-      throw error;
+  async deletePipeline(id: string, userId: string): Promise<void> {
+    // First check if the user owns this pipeline
+    const existingPipeline = await db.getPipeline(id, userId);
+    if (!existingPipeline) {
+      throw new Error('Pipeline not found or access denied');
     }
+    await db.deletePipeline(id);
   }
 } 

@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import CreatePipeline from '@/pages/CreatePipeline';
+import CreateProject from '@/pages/CreateProject';
 import PipelinesPage from '@/pages/PipelinesPage';
 import PipelineSettings from '@/pages/PipelineSettings';
 import PipelineHistory from '@/pages/PipelineHistory';
@@ -71,6 +72,14 @@ function App() {
               <Route path="/register" element={<Register />} />
 
               {/* Protected routes */}
+              <Route
+                path="/projects/new"
+                element={
+                  <ProtectedRoute>
+                    <CreateProject />
+                  </ProtectedRoute>
+                }
+              />
               <Route
                 path="/pipelines/new"
                 element={

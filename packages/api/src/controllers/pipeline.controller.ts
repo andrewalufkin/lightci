@@ -24,7 +24,8 @@ export class PipelineController {
         page,
         limit,
         filter: req.query.filter as string,
-        sort: req.query.sort as string
+        sort: req.query.sort as string,
+        userId: req.user.id
       });
       
       // Even if no pipelines exist, return a valid response with empty items
@@ -62,8 +63,8 @@ export class PipelineController {
         repository: config.repository
       });
 
-      // Initialize pipeline
-      const pipeline = await this.pipelineService.createPipeline(config);
+      // Initialize pipeline with user ID
+      const pipeline = await this.pipelineService.createPipeline(config, req.user.id);
 
       res.status(201).json(pipeline);
     } catch (error) {
@@ -81,7 +82,7 @@ export class PipelineController {
       const { id } = req.params;
       console.log(`[Pipeline] Fetching pipeline with ID: ${id}`);
       
-      const pipeline = await this.pipelineService.getPipeline(id);
+      const pipeline = await this.pipelineService.getPipeline(id, req.user.id);
       console.log(`[Pipeline] Pipeline fetch result:`, pipeline ? 'Found' : 'Not found');
       
       if (!pipeline) {
@@ -119,14 +120,14 @@ export class PipelineController {
       const { id } = req.params;
       const config: PipelineConfig = req.body;
 
-      // Check if pipeline exists
-      const existingPipeline = await this.pipelineService.getPipeline(id);
+      // Check if pipeline exists and user has access
+      const existingPipeline = await this.pipelineService.getPipeline(id, req.user.id);
       if (!existingPipeline) {
-        throw new NotFoundError('Pipeline not found');
+        throw new NotFoundError('Pipeline not found or access denied');
       }
 
       // Update pipeline
-      const pipeline = await this.pipelineService.updatePipeline(id, config);
+      const pipeline = await this.pipelineService.updatePipeline(id, config, req.user.id);
       res.json(pipeline);
     } catch (error) {
       if (error instanceof NotFoundError) {
@@ -143,14 +144,14 @@ export class PipelineController {
     try {
       const { id } = req.params;
 
-      // Check if pipeline exists
-      const pipeline = await this.pipelineService.getPipeline(id);
+      // Check if pipeline exists and user has access
+      const pipeline = await this.pipelineService.getPipeline(id, req.user.id);
       if (!pipeline) {
-        throw new NotFoundError('Pipeline not found');
+        throw new NotFoundError('Pipeline not found or access denied');
       }
 
       // Delete pipeline
-      await this.pipelineService.deletePipeline(id);
+      await this.pipelineService.deletePipeline(id, req.user.id);
 
       res.status(204).send();
     } catch (error) {
@@ -167,10 +168,10 @@ export class PipelineController {
       const { id } = req.params;
       const { branch, commit } = req.body;
 
-      // Get pipeline
-      const pipeline = await this.pipelineService.getPipeline(id);
+      // Get pipeline and verify access
+      const pipeline = await this.pipelineService.getPipeline(id, req.user.id);
       if (!pipeline) {
-        throw new NotFoundError('Pipeline not found');
+        throw new NotFoundError('Pipeline not found or access denied');
       }
 
       // Use default branch if none specified

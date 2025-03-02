@@ -1,7 +1,9 @@
 import * as bcrypt from 'bcryptjs';
-import * as jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
 import { authConfig } from '../config/auth.config';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const jwt = require('jsonwebtoken');
 
 export interface JWTPayload {
   userId: string;

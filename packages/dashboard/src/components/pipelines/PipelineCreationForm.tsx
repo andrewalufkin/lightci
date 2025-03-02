@@ -29,6 +29,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical, Terminal } from 'lucide-react';
 import { Textarea } from '@/components/ui/textarea';
+import { api } from '@/services/api';
 
 interface PipelineStep {
   id: string;
@@ -281,6 +282,15 @@ const defaultArtifactPatterns: Record<string, ArtifactPattern[]> = {
 // Add API URL and key configuration
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 const API_KEY = import.meta.env.VITE_API_KEY;
+
+// Add API URL normalization helper
+const normalizeApiUrl = (baseUrl: string) => {
+  // Remove trailing slash if present
+  baseUrl = baseUrl.replace(/\/$/, '');
+  // Remove /api suffix if present
+  baseUrl = baseUrl.replace(/\/api$/, '');
+  return baseUrl;
+};
 
 // Add validation functions
 const validateGitHubRepo = async (url: string): Promise<boolean> => {
@@ -715,44 +725,9 @@ const PipelineCreationForm = () => {
 
     try {
       const apiPayload = transformFormToApiPayload();
-      const response = await fetch(`${API_URL}/api/pipelines`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'x-api-key': API_KEY,
-        },
-        body: JSON.stringify(apiPayload),
-      });
-
-      let responseData;
-      const responseText = await response.text();
-
-      try {
-        responseData = JSON.parse(responseText);
-      } catch (e) {
-        console.error('Failed to parse response as JSON:', e);
-        responseData = { message: 'Invalid server response' };
-      }
-
-      if (response.ok) {
-        navigate('/');
-      } else {
-        let errorMessage = 'Failed to create pipeline';
-        
-        if (responseData.message) {
-          errorMessage += `: ${responseData.message}`;
-        }
-        
-        if (responseData.errors) {
-          errorMessage += '\nValidation errors:\n';
-          errorMessage += Object.entries(responseData.errors)
-            .map(([field, error]) => `- ${field}: ${error}`)
-            .join('\n');
-        }
-
-        alert(errorMessage);
-      }
+      console.log('Pipeline creation payload:', JSON.stringify(apiPayload, null, 2));
+      await api.createPipeline(apiPayload);
+      navigate('/');
     } catch (error) {
       console.error('Error creating pipeline:', error);
       

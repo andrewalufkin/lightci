@@ -6,7 +6,10 @@ import { prisma } from '../lib/prisma';
 
 export async function register(req: Request, res: Response) {
   try {
+    console.log('Starting registration process with body:', JSON.stringify(req.body, null, 2));
+    
     const validatedData = registerSchema.parse(req.body);
+    console.log('Validation passed successfully:', validatedData);
 
     // Check if user already exists
     const existingUser = await prisma.user.findFirst({
@@ -19,13 +22,21 @@ export async function register(req: Request, res: Response) {
     });
 
     if (existingUser) {
+      console.log('Registration failed: User already exists with email or username:', {
+        email: validatedData.email,
+        username: validatedData.username
+      });
       return res.status(400).json({
         error: 'User with this email or username already exists',
       });
     }
 
+    console.log('No existing user found, proceeding with user creation');
+
     // Create user
     const hashedPassword = await hashPassword(validatedData.password);
+    console.log('Password hashed successfully');
+
     const user = await prisma.user.create({
       data: {
         email: validatedData.email,
@@ -41,6 +52,7 @@ export async function register(req: Request, res: Response) {
         createdAt: true,
       },
     });
+    console.log('User created successfully:', { userId: user.id, email: user.email });
 
     // Create default notification preferences
     await prisma.notificationPreference.create({
@@ -48,16 +60,23 @@ export async function register(req: Request, res: Response) {
         userId: user.id,
       },
     });
+    console.log('Default notification preferences created for user:', user.id);
 
     // Generate JWT
     const token = generateJWT(user);
+    console.log('JWT token generated successfully');
 
     return res.status(201).json({
       user,
       token,
     });
   } catch (error) {
-    console.error('Registration error:', error);
+    console.error('Registration error:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      cause: error.cause
+    });
     return res.status(400).json({
       error: error instanceof Error ? error.message : 'Invalid request data',
     });

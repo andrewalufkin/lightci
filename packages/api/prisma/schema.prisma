@@ -17,7 +17,6 @@ model Pipeline {
   steps                 Json          @default("[]")
   triggers              Json?         @default("{}")
   schedule              Json?         @default("{}")
-  webhookConfig         Json?         @default("{}") @map("webhook_config")
   status                String        @default("created")
   createdAt             DateTime      @default(now()) @map("created_at")
   updatedAt             DateTime      @updatedAt @map("updated_at")
@@ -29,11 +28,12 @@ model Pipeline {
   deploymentConfig      Json?         @default("{}") @map("deployment_config")
   deploymentEnabled     Boolean       @default(false) @map("deployment_enabled")
   deploymentPlatform    String?       @map("deployment_platform")
-  projectId             String?       @map("project_id")
+  webhookConfig         Json?         @default("{}") @map("webhook_config")
   createdById           String?       @map("created_by")
+  projectId             String?       @map("project_id")
   runs                  PipelineRun[]
-  project               Project?      @relation(fields: [projectId], references: [id])
   createdBy             User?         @relation("CreatedBy", fields: [createdById], references: [id])
+  project               Project?      @relation(fields: [projectId], references: [id])
 
   @@map("pipelines")
 }
@@ -60,22 +60,22 @@ model PipelineRun {
 }
 
 model User {
-  id                String                  @id @default(uuid())
-  email             String                  @unique
-  username          String?                 @unique
-  passwordHash      String                  @map("password_hash")
-  fullName          String?                 @map("full_name")
-  createdAt         DateTime                @default(now()) @map("created_at")
-  updatedAt         DateTime                @updatedAt @map("updated_at")
-  lastLoginAt       DateTime?               @map("last_login_at")
-  accountStatus     String                  @default("active") @map("account_status")
-  accountTier       String                  @default("free") @map("account_tier")
-  apiKeys           ApiKey[]
-  createdPipelines  Pipeline[]              @relation("CreatedBy")
-  orgMemberships    OrganizationMember[]
-  notificationPrefs NotificationPreference?
-  repoConnections   RepositoryConnection[]
-  ownedProjects     Project[]               @relation("UserProjects")
+  id                     String                  @id @default(uuid())
+  email                  String                  @unique
+  username               String?                 @unique
+  passwordHash           String                  @map("password_hash")
+  fullName               String?                 @map("full_name")
+  createdAt              DateTime                @default(now()) @map("created_at")
+  updatedAt              DateTime                @updatedAt @map("updated_at")
+  lastLoginAt            DateTime?               @map("last_login_at")
+  accountStatus          String                  @default("active") @map("account_status")
+  accountTier            String                  @default("free") @map("account_tier")
+  apiKeys                ApiKey[]
+  notificationPrefs      NotificationPreference?
+  orgMemberships         OrganizationMember[]
+  createdPipelines       Pipeline[]              @relation("CreatedBy")
+  projects               Project[]
+  repository_connections RepositoryConnection[]
 
   @@map("users")
 }
@@ -97,15 +97,15 @@ model ApiKey {
 }
 
 model Organization {
-  id              String                 @id @default(uuid())
-  name            String
-  slug            String                 @unique
-  createdAt       DateTime               @default(now()) @map("created_at")
-  updatedAt       DateTime               @updatedAt @map("updated_at")
-  planTier        String                 @default("free") @map("plan_tier")
-  members         OrganizationMember[]
-  projects        Project[]              @relation("OrgProjects")
-  repoConnections RepositoryConnection[]
+  id                     String                 @id @default(uuid())
+  name                   String
+  slug                   String                 @unique
+  createdAt              DateTime               @default(now()) @map("created_at")
+  updatedAt              DateTime               @updatedAt @map("updated_at")
+  planTier               String                 @default("free") @map("plan_tier")
+  members                OrganizationMember[]
+  projects               Project[]
+  repository_connections RepositoryConnection[]
 
   @@map("organizations")
 }
@@ -124,18 +124,24 @@ model OrganizationMember {
 }
 
 model Project {
-  id           String        @id @default(uuid())
-  name         String
-  description  String?
-  ownerId      String        @map("owner_id")
-  ownerType    String        @map("owner_type")
-  createdAt    DateTime      @default(now()) @map("created_at")
-  updatedAt    DateTime      @updatedAt @map("updated_at")
-  pipelines    Pipeline[]
-  organization Organization? @relation("OrgProjects", fields: [ownerId], references: [id], map: "projects_org_owner_fkey")
-  user         User?         @relation("UserProjects", fields: [ownerId], references: [id], map: "projects_user_owner_fkey")
+  id             String       @id
+  name           String
+  description    String?
+  owner_id       String
+  owner_type     String
+  created_at     DateTime     @default(now())
+  updated_at     DateTime
+  default_branch String?
+  last_build_at  DateTime?
+  settings       Json?        @default("{}")
+  status         String       @default("active")
+  visibility     String       @default("private")
+  pipelines      Pipeline[]
+  organizations  Organization? @relation(fields: [owner_id], references: [id], map: "projects_org_owner_fkey")
+  users          User         @relation(fields: [owner_id], references: [id], map: "projects_user_owner_fkey")
 
-  @@unique([name, ownerId, ownerType])
+  @@unique([name, owner_id, owner_type])
+  @@index([owner_id, owner_type])
   @@map("projects")
 }
 
@@ -151,18 +157,18 @@ model NotificationPreference {
 }
 
 model RepositoryConnection {
-  id                   String        @id @default(uuid())
-  userId               String?       @map("user_id")
-  organizationId       String?       @map("organization_id")
-  gitProvider          String        @map("git_provider")
-  repositoryUrl        String        @map("repository_url")
-  accessTokenEncrypted String?       @map("access_token_encrypted")
-  webhookId            String?       @map("webhook_id")
-  webhookSecret        String?       @map("webhook_secret")
-  createdAt            DateTime      @default(now()) @map("created_at")
-  updatedAt            DateTime      @updatedAt @map("updated_at")
-  user                 User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization         Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id                     String        @id
+  user_id                String?
+  organization_id        String?
+  git_provider           String
+  repository_url         String
+  access_token_encrypted String?
+  webhook_id             String?
+  webhook_secret         String?
+  created_at             DateTime      @default(now())
+  updated_at             DateTime
+  organizations          Organization? @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  users                  User?         @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@map("repository_connections")
 }

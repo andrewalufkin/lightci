@@ -61,45 +61,50 @@ export class DatabaseService {
     };
   }
 
-  async listPipelines(options: { page: number; limit: number; filter?: string; sort?: string; }): Promise<PaginatedResult<DatabasePipeline>> {
-    const { page, limit, filter, sort } = options;
+  async listPipelines(options: { page: number; limit: number; filter?: string; sort?: string; where?: any; }): Promise<PaginatedResult<DatabasePipeline>> {
+    const skip = (options.page - 1) * options.limit;
+    const where = {
+      ...options.where,
+      ...(options.filter ? {
+        OR: [
+          { name: { contains: options.filter, mode: 'insensitive' } },
+          { description: { contains: options.filter, mode: 'insensitive' } },
+          { repository: { contains: options.filter, mode: 'insensitive' } }
+        ]
+      } : {})
+    };
 
-    // Build where clause for filtering
-    const where = filter ? {
-      OR: [
-        { name: { contains: filter, mode: 'insensitive' } },
-        { repository: { contains: filter, mode: 'insensitive' } },
-        { description: { contains: filter, mode: 'insensitive' } }
-      ]
-    } : {};
-
-    // Build orderBy clause for sorting
-    let orderBy = {};
-    if (sort) {
-      const [field, order] = sort.split(':');
-      orderBy = { [field]: order };
-    }
-
-    // Get total count for pagination
-    const total = await prisma.pipeline.count({ where });
-
-    // Get paginated results
-    const items = await prisma.pipeline.findMany({
-      where,
-      orderBy,
-      skip: (page - 1) * limit,
-      take: limit
-    });
+    const [total, items] = await Promise.all([
+      prisma.pipeline.count({ where }),
+      prisma.pipeline.findMany({
+        where,
+        skip,
+        take: options.limit,
+        orderBy: { createdAt: 'desc' }
+      })
+    ]);
 
     return {
-      items: items.map(this.transformPipelineFromDb),
+      items: items.map(p => this.transformPipelineFromDb(p)),
       total,
-      page,
-      limit
+      page: options.page,
+      limit: options.limit,
+      totalPages: Math.ceil(total / options.limit)
     };
   }
 
-  async createPipeline(pipeline: Omit<DatabasePipeline, 'id' | 'status' | 'createdAt' | 'updatedAt'>): Promise<DatabasePipeline> {
+  async getPipeline(id: string, userId: string): Promise<DatabasePipeline | null> {
+    const pipeline = await prisma.pipeline.findFirst({
+      where: {
+        id,
+        createdById: userId
+      }
+    });
+    if (!pipeline) return null;
+    return this.transformPipelineFromDb(pipeline);
+  }
+
+  async createPipeline(pipeline: Omit<DatabasePipeline, 'id' | 'status' | 'createdAt' | 'updatedAt'> & { createdById: string }): Promise<DatabasePipeline> {
     const created = await prisma.pipeline.create({
       data: {
         name: pipeline.name,
@@ -110,6 +115,7 @@ export class DatabaseService {
         triggers: pipeline.triggers ? JSON.stringify(pipeline.triggers) : undefined,
         schedule: pipeline.schedule ? JSON.stringify(pipeline.schedule) : undefined,
         webhookConfig: pipeline.webhookConfig ? JSON.stringify(pipeline.webhookConfig) : undefined,
+        createdById: pipeline.createdById,
         
         // Artifact configuration
         artifactsEnabled: pipeline.artifactsEnabled ?? true,
@@ -129,84 +135,39 @@ export class DatabaseService {
     return this.transformPipelineFromDb(created);
   }
 
-  async getPipeline(id: string): Promise<DatabasePipeline | null> {
-    const pipeline = await prisma.pipeline.findUnique({
-      where: { id }
-    });
-    return pipeline ? this.transformPipelineFromDb(pipeline) : null;
-  }
-
   async updatePipeline(id: string, pipeline: Partial<Omit<DatabasePipeline, 'id' | 'createdAt' | 'updatedAt'>>): Promise<DatabasePipeline> {
-    const data: any = {};
-
-    if (pipeline.name) data.name = pipeline.name;
-    if (pipeline.description !== undefined) data.description = pipeline.description;
-    if (pipeline.repository) data.repository = pipeline.repository;
-    if (pipeline.defaultBranch) data.defaultBranch = pipeline.defaultBranch;
-    if (pipeline.status) data.status = pipeline.status;
-    if (pipeline.steps) data.steps = JSON.stringify(pipeline.steps);
-    if (pipeline.triggers) data.triggers = JSON.stringify(pipeline.triggers);
-    if (pipeline.schedule) data.schedule = JSON.stringify(pipeline.schedule);
-    
-    // Artifact configuration
-    if (pipeline.artifactsEnabled !== undefined) data.artifactsEnabled = pipeline.artifactsEnabled;
-    if (pipeline.artifactPatterns) data.artifactPatterns = JSON.stringify(pipeline.artifactPatterns);
-    if (pipeline.artifactRetentionDays !== undefined) data.artifactRetentionDays = pipeline.artifactRetentionDays;
-    if (pipeline.artifactStorageType) data.artifactStorageType = pipeline.artifactStorageType;
-    if (pipeline.artifactStorageConfig) data.artifactStorageConfig = JSON.stringify(pipeline.artifactStorageConfig);
-    
-    // Deployment configuration
-    if (pipeline.deploymentEnabled !== undefined) data.deploymentEnabled = pipeline.deploymentEnabled;
-    if (pipeline.deploymentPlatform !== undefined) data.deploymentPlatform = pipeline.deploymentPlatform;
-    if (pipeline.deploymentConfig) data.deploymentConfig = JSON.stringify(pipeline.deploymentConfig);
-
     const updated = await prisma.pipeline.update({
       where: { id },
-      data,
+      data: {
+        ...(pipeline.name && { name: pipeline.name }),
+        ...(pipeline.repository && { repository: pipeline.repository }),
+        ...(pipeline.description !== undefined && { description: pipeline.description }),
+        ...(pipeline.defaultBranch && { defaultBranch: pipeline.defaultBranch }),
+        ...(pipeline.steps && { steps: JSON.stringify(pipeline.steps) }),
+        ...(pipeline.triggers && { triggers: JSON.stringify(pipeline.triggers) }),
+        ...(pipeline.schedule && { schedule: JSON.stringify(pipeline.schedule) }),
+        ...(pipeline.webhookConfig && { webhookConfig: JSON.stringify(pipeline.webhookConfig) }),
+        
+        // Artifact configuration
+        ...(pipeline.artifactsEnabled !== undefined && { artifactsEnabled: pipeline.artifactsEnabled }),
+        ...(pipeline.artifactPatterns && { artifactPatterns: JSON.stringify(pipeline.artifactPatterns) }),
+        ...(pipeline.artifactRetentionDays && { artifactRetentionDays: pipeline.artifactRetentionDays }),
+        ...(pipeline.artifactStorageType && { artifactStorageType: pipeline.artifactStorageType }),
+        ...(pipeline.artifactStorageConfig && { artifactStorageConfig: JSON.stringify(pipeline.artifactStorageConfig) }),
+        
+        // Deployment configuration
+        ...(pipeline.deploymentEnabled !== undefined && { deploymentEnabled: pipeline.deploymentEnabled }),
+        ...(pipeline.deploymentPlatform !== undefined && { deploymentPlatform: pipeline.deploymentPlatform }),
+        ...(pipeline.deploymentConfig && { deploymentConfig: JSON.stringify(pipeline.deploymentConfig) })
+      }
     });
     return this.transformPipelineFromDb(updated);
   }
 
   async deletePipeline(id: string): Promise<void> {
-    try {
-      // First check if pipeline exists
-      const pipeline = await prisma.pipeline.findUnique({
-        where: { id }
-      });
-
-      if (!pipeline) {
-        console.log(`[Database] Pipeline ${id} not found, skipping deletion`);
-        return;
-      }
-
-      // Delete all pipeline runs first
-      const deleteRunsResult = await prisma.pipelineRun.deleteMany({
-        where: { 
-          OR: [
-            { pipelineId: id },
-            { pipeline: { id } }
-          ]
-        }
-      });
-      console.log(`[Database] Deleted ${deleteRunsResult.count} pipeline runs for pipeline ${id}`);
-
-      // Then delete the pipeline itself
-      await prisma.pipeline.delete({
-        where: { id }
-      });
-
-      console.log(`[Database] Successfully deleted pipeline ${id} and its runs from database`);
-    } catch (error) {
-      console.error(`[Database] Error deleting pipeline ${id}:`, error);
-      if (error instanceof Error && error.name === 'PrismaClientKnownRequestError') {
-        // If pipeline doesn't exist, just log and return
-        if ((error as any).code === 'P2025') {
-          console.log(`[Database] Pipeline ${id} already deleted, skipping`);
-          return;
-        }
-      }
-      throw error;
-    }
+    await prisma.pipeline.delete({
+      where: { id }
+    });
   }
 }
 

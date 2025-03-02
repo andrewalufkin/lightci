@@ -82,20 +82,43 @@ class ApiClient {
   private client: any;
 
   constructor() {
-    const baseURL = (import.meta.env.VITE_API_URL || 'http://localhost:3000') + '/api';
-    console.log('API Client initialized with baseURL:', baseURL);
+    const rawBaseURL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+    
+    // Create a URL object to properly parse the URL
+    const url = new URL(rawBaseURL);
+    
+    // Remove trailing slashes from the pathname
+    const cleanPath = url.pathname.replace(/\/+$/, '');
+    
+    // Check if the path ends with /api (not just contains it)
+    if (!cleanPath.includes('/api')) {
+      url.pathname = cleanPath + '/api';
+    } else {
+      url.pathname = cleanPath;
+    }
+    
+    const finalBaseURL = url.toString().replace(/\/+$/, '');
+    console.log('API Client initialized with baseURL:', finalBaseURL);
     
     this.client = axios.create({
-      baseURL,
+      baseURL: finalBaseURL,
       headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': import.meta.env.VITE_API_KEY || 'dev-api-key'
+        'Content-Type': 'application/json'
       }
     });
 
-    // Add request interceptor for debugging
+    // Add request interceptor to include auth token
     this.client.interceptors.request.use((config: any) => {
-      console.log('Making request to:', config.url, 'with headers:', config.headers);
+      const token = localStorage.getItem('auth_token');
+      console.log('[Debug] Token from localStorage:', token ? 'Present' : 'Not found');
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+        console.log('[Debug] Authorization header set:', config.headers.Authorization);
+      } else {
+        console.log('[Debug] No token found in localStorage');
+        delete config.headers.Authorization; // Ensure no auth header is present if no token
+      }
+      console.log('[Debug] Making request to:', config.url, 'with headers:', JSON.stringify(config.headers, null, 2));
       return config;
     });
 
@@ -215,6 +238,45 @@ class ApiClient {
   async listBuildArtifacts(buildId: string): Promise<Artifact[]> {
     const response = await this.client.get(`/runs/${buildId}/artifacts`);
     return response.data;
+  }
+
+  // Project endpoints
+  async createProject(data: {
+    name: string;
+    description?: string;
+    visibility?: string;
+    defaultBranch?: string;
+    pipelineIds?: string[];
+    settings?: Record<string, any>;
+  }): Promise<any> {
+    const response = await this.client.post('/projects', data);
+    return response.data;
+  }
+
+  async listProjects(): Promise<any[]> {
+    const response = await this.client.get('/projects');
+    return response.data;
+  }
+
+  async getProject(id: string): Promise<any> {
+    const response = await this.client.get(`/projects/${id}`);
+    return response.data;
+  }
+
+  async updateProject(id: string, data: {
+    name?: string;
+    description?: string;
+    visibility?: string;
+    defaultBranch?: string;
+    pipelineIds?: string[];
+    settings?: Record<string, any>;
+  }): Promise<any> {
+    const response = await this.client.put(`/projects/${id}`, data);
+    return response.data;
+  }
+
+  async deleteProject(id: string): Promise<void> {
+    await this.client.delete(`/projects/${id}`);
   }
 }
 
