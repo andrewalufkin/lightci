@@ -1,0 +1,247 @@
+# LightCI Automated Test Strategy
+
+## Overview
+This document outlines the automated testing strategy for the LightCI continuous integration platform. The goal is to ensure comprehensive test coverage of all API endpoints and core functionality to maintain system reliability and facilitate future development.
+
+## Testing Levels
+
+### 1. Unit Tests
+- **Purpose**: Test individual functions and methods in isolation
+- **Tools**: Jest
+- **Coverage Target**: 80% code coverage for critical services and utilities
+
+### 2. Integration Tests
+- **Purpose**: Test interactions between components and API endpoints
+- **Tools**: Jest, Supertest
+- **Coverage Target**: 100% of API endpoints
+
+### 3. End-to-End Tests
+- **Purpose**: Test complete user workflows across the system
+- **Tools**: Jest, Supertest
+- **Coverage Target**: Key user workflows
+
+## Test Environment
+
+### Test Database
+- Use an in-memory or containerized test database
+- Reset database state between test suites
+- Populate with fixture data for consistent testing
+
+### Mock Services
+- Mock external dependencies (GitHub/GitLab APIs, etc.)
+- Use dependency injection to replace real services with mocks
+
+### Authentication
+- Create test API keys and user accounts
+- Test both authenticated and unauthenticated requests
+
+## API Endpoint Testing Strategy
+
+### Authentication Endpoints
+- **POST /api/auth/register**
+  - Test valid registration with required fields
+  - Test duplicate email/username handling
+  - Test validation of required fields
+  - Test password strength requirements
+
+- **POST /api/auth/login**
+  - Test valid login credentials
+  - Test invalid credentials
+  - Test account lockout after multiple failed attempts
+
+- **POST /api/auth/api-keys**
+  - Test API key creation
+  - Test permissions and scopes
+
+- **GET /api/auth/api-keys**
+  - Test listing all API keys for a user
+  - Test pagination
+
+- **DELETE /api/auth/api-keys/:keyId**
+  - Test successful revocation
+  - Test attempting to revoke non-existent key
+  - Test permissions (only owner can revoke)
+
+- **PATCH /api/auth/profile**
+  - Test updating user profile
+  - Test validation of fields
+
+### Pipeline Endpoints
+- **GET /api/pipelines**
+  - Test listing all pipelines
+  - Test pagination
+  - Test filtering by various parameters
+  - Test sorting options
+
+- **POST /api/pipelines**
+  - Test creating valid pipeline
+  - Test validation of required fields
+  - Test handling of invalid configurations
+  - Test permissions
+
+- **GET /api/pipelines/:id**
+  - Test retrieving existing pipeline
+  - Test handling non-existent pipeline
+  - Test permissions
+
+- **PUT /api/pipelines/:id**
+  - Test updating pipeline configuration
+  - Test validation of fields
+  - Test permissions
+
+- **DELETE /api/pipelines/:id**
+  - Test successful deletion
+  - Test cascading deletion of related resources
+  - Test permissions
+
+- **POST /api/pipelines/:id/trigger**
+  - Test manual pipeline triggering
+  - Test with different parameters (branch, commit)
+  - Test permissions
+
+### Pipeline Run Endpoints
+- **GET /api/pipeline-runs**
+  - Test listing all pipeline runs
+  - Test pagination
+  - Test filtering by pipeline, status, date range
+
+- **GET /api/pipeline-runs/:id**
+  - Test retrieving existing run
+  - Test handling non-existent run
+  - Test permissions
+
+- **DELETE /api/pipeline-runs/:id**
+  - Test successful deletion
+  - Test permissions
+
+- **GET /api/pipeline-runs/:id/artifacts**
+  - Test listing artifacts for a run
+  - Test empty artifact list
+  - Test permissions
+
+- **PUT /api/pipeline-runs/:id/status**
+  - Test updating run status
+  - Test validation of status transitions
+  - Test permissions
+
+### Artifact Endpoints
+- **GET /api/artifacts/:id**
+  - Test downloading existing artifact
+  - Test handling non-existent artifact
+  - Test permissions
+  - Test different file types and sizes
+
+- **POST /api/artifacts**
+  - Test uploading artifact with valid data
+  - Test validation of required fields
+  - Test file size limits
+  - Test permissions
+
+- **DELETE /api/artifacts/:id**
+  - Test successful deletion
+  - Test permissions
+
+### Webhook Endpoints
+- **POST /api/webhooks/github**
+  - Test handling different GitHub event types (push, pull request, etc.)
+  - Test signature validation
+  - Test pipeline triggering based on events
+  - Test branch filtering
+
+- **POST /api/webhooks/gitlab**
+  - Test handling different GitLab event types
+  - Test pipeline triggering based on events
+  - Test branch filtering
+
+### Project Endpoints
+- **POST /api/projects**
+  - Test creating project with valid data
+  - Test validation of required fields
+  - Test permissions
+
+- **GET /api/projects**
+  - Test listing all projects
+  - Test pagination
+  - Test filtering
+
+- **GET /api/projects/:id**
+  - Test retrieving existing project
+  - Test handling non-existent project
+  - Test permissions
+
+- **PUT /api/projects/:id**
+  - Test updating project
+  - Test validation of fields
+  - Test permissions
+
+- **DELETE /api/projects/:id**
+  - Test successful deletion
+  - Test cascading deletion of related resources
+  - Test permissions
+
+## Test Data Management
+
+### Fixtures
+- Create reusable test fixtures for:
+  - Users and authentication
+  - Pipelines
+  - Builds
+  - Artifacts
+  - Projects
+
+### Test Isolation
+- Each test should be independent
+- Reset database state between tests
+- Use unique identifiers to prevent test interference
+
+## Mocking Strategy
+
+### External Services
+- Mock GitHub/GitLab API responses
+- Mock file system operations for artifacts
+- Mock email sending
+
+### Internal Services
+- Mock database interactions when appropriate
+- Mock time-dependent operations
+
+## Continuous Integration
+
+### Test Execution
+- Run unit tests on every commit
+- Run integration tests on every PR
+- Run end-to-end tests nightly or on significant changes
+
+### Test Reporting
+- Generate coverage reports
+- Track test metrics over time
+- Alert on test failures
+
+## Implementation Plan
+
+### Phase 1: Foundation
+- Set up test environment and utilities
+- Implement authentication endpoint tests
+- Implement basic pipeline endpoint tests
+
+### Phase 2: Core Functionality
+- Implement remaining pipeline and build endpoint tests
+- Implement artifact endpoint tests
+- Implement webhook endpoint tests
+
+### Phase 3: Advanced Features
+- Implement project endpoint tests
+- Implement end-to-end workflow tests
+- Optimize test performance
+
+## Maintenance and Evolution
+
+### Test Maintenance
+- Update tests when API contracts change
+- Refactor tests to reduce duplication
+- Review and improve test coverage regularly
+
+### Test Evolution
+- Add new tests for new features
+- Enhance existing tests based on bug reports
+- Continuously improve test reliability and performance 

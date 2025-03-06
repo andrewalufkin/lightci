@@ -1,8 +1,21 @@
 import { Router } from 'express';
+import { Request, Response, NextFunction, RequestHandler } from 'express-serve-static-core';
 import { ArtifactController } from '../controllers/artifact.controller';
 import { EngineService } from '../services/engine.service';
-import { authenticate } from '../middleware/auth';
+import { authenticate, AuthenticatedRequest } from '../middleware/auth';
 import { validateSchema } from '../middleware/validation';
+
+interface ArtifactParams {
+  id: string;
+}
+
+interface ArtifactUploadBody {
+  buildId: string;
+  name: string;
+  contentType?: string;
+  size?: number;
+  metadata?: Record<string, string>;
+}
 
 const router = Router();
 const engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
@@ -26,21 +39,21 @@ const artifactUploadSchema = {
 
 // Download artifact
 router.get('/:id',
-  authenticate,
-  artifactController.downloadArtifact.bind(artifactController)
+  authenticate as RequestHandler,
+  artifactController.downloadArtifact.bind(artifactController) as unknown as RequestHandler
 );
 
 // Upload artifact
 router.post('/',
-  authenticate,
+  authenticate as RequestHandler,
   validateSchema(artifactUploadSchema),
-  artifactController.uploadArtifact.bind(artifactController)
+  artifactController.uploadArtifact.bind(artifactController) as unknown as RequestHandler
 );
 
 // Delete artifact
 router.delete('/:id',
-  authenticate,
-  artifactController.deleteArtifact.bind(artifactController)
+  authenticate as RequestHandler,
+  artifactController.deleteArtifact.bind(artifactController) as unknown as RequestHandler
 );
 
 export { router as artifactRouter };

@@ -1,7 +1,7 @@
 export interface Step {
   id: string;
   name: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status?: 'pending' | 'running' | 'completed' | 'failed';
   command: string;
   output?: string;
   startedAt?: Date;

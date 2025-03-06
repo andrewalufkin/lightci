@@ -1,9 +1,32 @@
-import { Request, Response } from 'express';
+import { Request, Response } from 'express-serve-static-core';
 import { PipelineService } from '../services/pipeline.service';
 import { WorkspaceService } from '../services/workspace.service';
 import { PipelineRunnerService } from '../services/pipeline-runner.service';
 import { Pipeline, PipelineConfig } from '../models/Pipeline';
 import { ValidationError, NotFoundError } from '../utils/errors';
+
+interface AuthenticatedRequest extends Request {
+  user: {
+    id: string;
+    email: string;
+    username?: string;
+    fullName?: string;
+    accountStatus: string;
+    accountTier: string;
+  };
+}
+
+interface PipelineQueryParams {
+  page?: string;
+  limit?: string;
+  filter?: string;
+  sort?: string;
+}
+
+interface PipelineTriggerBody {
+  branch?: string;
+  commit?: string;
+}
 
 export class PipelineController {
   private pipelineRunnerService: PipelineRunnerService;
@@ -15,10 +38,10 @@ export class PipelineController {
     this.pipelineRunnerService = new PipelineRunnerService(workspaceService);
   }
 
-  async listPipelines(req: Request, res: Response) {
+  async listPipelines(req: AuthenticatedRequest, res: Response) {
     try {
-      const page = parseInt(req.query.page as string) || 1;
-      const limit = parseInt(req.query.limit as string) || 20;
+      const page = Number(req.query.page) || 1;
+      const limit = Number(req.query.limit) || 20;
       
       const pipelines = await this.pipelineService.listPipelines({
         page,
@@ -48,9 +71,9 @@ export class PipelineController {
     }
   }
 
-  async createPipeline(req: Request, res: Response) {
+  async createPipeline(req: AuthenticatedRequest, res: Response) {
     try {
-      const config: PipelineConfig = req.body;
+      const config = req.body as PipelineConfig;
       
       // Validate pipeline configuration
       if (!config.steps || config.steps.length === 0) {
@@ -77,7 +100,7 @@ export class PipelineController {
     }
   }
 
-  async getPipeline(req: Request, res: Response) {
+  async getPipeline(req: AuthenticatedRequest, res: Response) {
     try {
       const { id } = req.params;
       console.log(`[Pipeline] Fetching pipeline with ID: ${id}`);
@@ -101,11 +124,11 @@ export class PipelineController {
           code: 'PIPELINE_NOT_FOUND'
         });
       } else {
-        console.error('[Pipeline] Detailed error:', {
+        console.error('[Pipeline] Detailed error:', error instanceof Error ? {
           name: error.name,
           message: error.message,
           stack: error.stack,
-        });
+        } : 'Unknown error');
         res.status(500).json({ 
           error: 'Failed to get pipeline',
           message: 'An unexpected error occurred while fetching the pipeline details. Please try again.',
@@ -115,10 +138,10 @@ export class PipelineController {
     }
   }
 
-  async updatePipeline(req: Request, res: Response) {
+  async updatePipeline(req: AuthenticatedRequest, res: Response) {
     try {
       const { id } = req.params;
-      const config: PipelineConfig = req.body;
+      const config = req.body as PipelineConfig;
 
       // Check if pipeline exists and user has access
       const existingPipeline = await this.pipelineService.getPipeline(id, req.user.id);
@@ -140,7 +163,7 @@ export class PipelineController {
     }
   }
 
-  async deletePipeline(req: Request, res: Response) {
+  async deletePipeline(req: AuthenticatedRequest, res: Response) {
     try {
       const { id } = req.params;
 
@@ -163,10 +186,10 @@ export class PipelineController {
     }
   }
 
-  async triggerPipeline(req: Request, res: Response) {
+  async triggerPipeline(req: AuthenticatedRequest, res: Response) {
     try {
       const { id } = req.params;
-      const { branch, commit } = req.body;
+      const { branch, commit } = req.body as PipelineTriggerBody;
 
       // Get pipeline and verify access
       const pipeline = await this.pipelineService.getPipeline(id, req.user.id);

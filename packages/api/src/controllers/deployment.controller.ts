@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
-import { DeploymentService, DeploymentResult } from '../services/deployment.service';
+import { DeploymentService, DeploymentResult, DeploymentConfig } from '../services/deployment.service';
 import { NotFoundError } from '../utils/errors';
 import { prisma } from '../db';
+import { RequestWithParams } from '../types/express';
 
 export class DeploymentController {
   private deploymentService: DeploymentService;
@@ -13,12 +14,12 @@ export class DeploymentController {
   /**
    * Trigger a deployment for a successful pipeline run
    */
-  async triggerDeployment(req: Request, res: Response): Promise<void> {
+  async triggerDeployment(req: RequestWithParams, res: Response): Promise<void> {
     try {
       const { runId } = req.params;
       
       if (!runId) {
-        res.status(400).json({ error: 'Run ID is required' });
+        (res as any).status(400).json({ error: 'Run ID is required' });
         return;
       }
       
@@ -29,13 +30,13 @@ export class DeploymentController {
       });
       
       if (!run) {
-        res.status(404).json({ error: 'Pipeline run not found' });
+        (res as any).status(404).json({ error: 'Pipeline run not found' });
         return;
       }
       
       // Check if the run is completed
       if (run.status !== 'completed') {
-        res.status(400).json({ 
+        (res as any).status(400).json({ 
           error: 'Cannot deploy a failed or incomplete pipeline run',
           status: run.status
         });
@@ -44,18 +45,24 @@ export class DeploymentController {
       
       // Check if deployment is enabled for this pipeline
       if (!run.pipeline.deploymentEnabled) {
-        res.status(400).json({ 
+        (res as any).status(400).json({ 
           error: 'Deployment is not enabled for this pipeline',
           pipeline: run.pipelineId
         });
         return;
       }
       
+      // Create deployment config from pipeline configuration
+      const deploymentConfig: DeploymentConfig = {
+        platform: run.pipeline.deploymentPlatform || 'custom',
+        config: run.pipeline.deploymentConfig as Record<string, any> || {},
+      };
+      
       // Trigger deployment in the background
-      const deploymentPromise = this.deploymentService.deployPipelineRun(runId);
+      const deploymentPromise = this.deploymentService.deployPipelineRun(runId, deploymentConfig);
       
       // Respond immediately to client
-      res.status(202).json({ 
+      (res as any).status(202).json({ 
         message: 'Deployment triggered',
         runId,
         pipelineId: run.pipelineId,
@@ -73,19 +80,19 @@ export class DeploymentController {
     } catch (error) {
       console.error('[DeploymentController] Error triggering deployment:', error);
       const statusCode = error instanceof NotFoundError ? 404 : 500;
-      res.status(statusCode).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+      (res as any).status(statusCode).json({ error: error instanceof Error ? error.message : 'Unknown error' });
     }
   }
   
   /**
    * Check the deployment status for a pipeline run
    */
-  async getDeploymentStatus(req: Request, res: Response): Promise<void> {
+  async getDeploymentStatus(req: RequestWithParams, res: Response): Promise<void> {
     try {
       const { runId } = req.params;
       
       if (!runId) {
-        res.status(400).json({ error: 'Run ID is required' });
+        (res as any).status(400).json({ error: 'Run ID is required' });
         return;
       }
       
@@ -96,7 +103,7 @@ export class DeploymentController {
       });
       
       if (!run) {
-        res.status(404).json({ error: 'Pipeline run not found' });
+        (res as any).status(404).json({ error: 'Pipeline run not found' });
         return;
       }
       
@@ -124,7 +131,7 @@ export class DeploymentController {
         }
       }
       
-      res.json({
+      const responseData = {
         runId,
         pipelineId: run.pipelineId,
         deploymentEnabled: run.pipeline.deploymentEnabled,
@@ -135,11 +142,13 @@ export class DeploymentController {
           // Remove the '[DEPLOYMENT]' prefix for cleaner output
           return typeof log === 'string' ? log.replace('[DEPLOYMENT] ', '') : log;
         })
-      });
+      };
+      
+      (res as any).json(responseData);
     } catch (error) {
       console.error('[DeploymentController] Error getting deployment status:', error);
       const statusCode = error instanceof NotFoundError ? 404 : 500;
-      res.status(statusCode).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+      (res as any).status(statusCode).json({ error: error instanceof Error ? error.message : 'Unknown error' });
     }
   }
 }

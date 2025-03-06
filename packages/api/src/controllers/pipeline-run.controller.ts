@@ -1,18 +1,51 @@
-import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import { Request, Response } from 'express-serve-static-core';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { EngineService } from '../services/engine.service';
 import { NotFoundError } from '../utils/errors';
-import { RequestHandler } from 'express';
+
+interface QueryParams {
+  page?: string;
+  limit?: string;
+  pipelineId?: string;
+}
+
+interface RouteParams {
+  id: string;
+}
+
+interface StepResult {
+  name: string;
+  command: string;
+  status: string;
+  output?: string;
+  error?: string;
+  duration?: number;
+}
+
+interface RequestBody {
+  status?: string;
+  stepResults?: StepResult[];
+  logs?: string[];
+  error?: string;
+}
+
+// Type for routes without ID parameter (like listRuns)
+export type ListRequest = Request<{}, any, RequestBody, QueryParams>;
+
+// Type for routes with ID parameter
+export type TypedRequest = Request<RouteParams, any, RequestBody, QueryParams>;
+
+type AsyncRequestHandler = (req: TypedRequest | ListRequest, res: Response) => Promise<void>;
 
 const prisma = new PrismaClient();
 const engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
 
 export class PipelineRunController {
-  listRuns: RequestHandler = async (req, res) => {
+  listRuns = async (req: ListRequest, res: Response) => {
     try {
-      const page = parseInt(req.query.page as string) || 1;
-      const limit = parseInt(req.query.limit as string) || 10;
-      const pipelineId = req.query.pipelineId as string;
+      const page = Number(req.query.page) || 1;
+      const limit = Number(req.query.limit) || 10;
+      const pipelineId = req.query.pipelineId;
 
       // Build the where clause for filtering
       const where = pipelineId ? { pipelineId } : {};
@@ -30,20 +63,13 @@ export class PipelineRunController {
 
       // Transform the data to match the frontend's expected format
       const transformedRuns = runs.map(run => {
-        console.log(`[PipelineRunController] Raw run data:`, {
-          id: run.id,
-          status: run.status,
-          stepResults: run.stepResults
-        });
-
-        // Ensure stepResults is an array
         const stepResults = Array.isArray(run.stepResults) 
-          ? run.stepResults 
-          : (typeof run.stepResults === 'string' 
-            ? JSON.parse(run.stepResults) 
+          ? run.stepResults
+          : (typeof run.stepResults === 'string'
+            ? JSON.parse(run.stepResults)
             : []);
 
-        const transformed = {
+        return {
           id: run.id,
           pipelineId: run.pipelineId,
           status: run.status,
@@ -52,21 +78,13 @@ export class PipelineRunController {
           createdAt: run.startedAt.toISOString(),
           startedAt: run.startedAt.toISOString(),
           completedAt: run.completedAt?.toISOString(),
-          stepResults: stepResults.map((step: any) => ({
+          stepResults: (stepResults as unknown as StepResult[]).map(step => ({
             ...step,
             status: step.status || 'pending'
           })),
           logs: Array.isArray(run.logs) ? run.logs : [],
           error: run.error || undefined
         };
-
-        console.log(`[PipelineRunController] Transformed run data:`, {
-          id: transformed.id,
-          status: transformed.status,
-          stepResults: transformed.stepResults
-        });
-
-        return transformed;
       });
 
       res.json({
@@ -86,7 +104,7 @@ export class PipelineRunController {
     }
   };
 
-  getRun: RequestHandler = async (req, res) => {
+  getRun = async (req: TypedRequest, res: Response) => {
     try {
       const { id } = req.params;
       
@@ -112,14 +130,22 @@ export class PipelineRunController {
         startedAt: run.startedAt.toISOString(),
         completedAt: run.completedAt?.toISOString(),
         stepResults: Array.isArray(run.stepResults) 
-          ? run.stepResults.map((step: any) => ({
-              ...step,
-              status: step.status || 'pending'
+          ? (run.stepResults as any[]).map(step => ({
+              name: String(step?.name || ''),
+              command: String(step?.command || ''),
+              status: String(step?.status || ''),
+              output: step?.output ? String(step.output) : undefined,
+              error: step?.error ? String(step.error) : undefined,
+              duration: typeof step?.duration === 'number' ? step.duration : undefined
             }))
           : (typeof run.stepResults === 'string'
-            ? JSON.parse(run.stepResults).map((step: any) => ({
-                ...step,
-                status: step.status || 'pending'
+            ? (JSON.parse(run.stepResults) as any[]).map(step => ({
+                name: String(step?.name || ''),
+                command: String(step?.command || ''),
+                status: String(step?.status || ''),
+                output: step?.output ? String(step.output) : undefined,
+                error: step?.error ? String(step.error) : undefined,
+                duration: typeof step?.duration === 'number' ? step.duration : undefined
               }))
             : []),
         logs: Array.isArray(run.logs) ? run.logs : [],
@@ -148,7 +174,7 @@ export class PipelineRunController {
     }
   };
 
-  deleteRun: RequestHandler = async (req, res) => {
+  deleteRun = async (req: TypedRequest, res: Response) => {
     try {
       const { id } = req.params;
       
@@ -174,13 +200,13 @@ export class PipelineRunController {
         await prisma.pipelineRun.delete({
           where: { id }
         });
-      } catch (dbError) {
+      } catch (error) {
         // If the record is already gone (deleted by engine), that's fine
-        if (dbError.code === 'P2025') {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
           console.log('[PipelineRun] Record already deleted by engine:', id);
         } else {
           // If it's any other database error, rethrow it
-          throw dbError;
+          throw error;
         }
       }
 
@@ -198,7 +224,7 @@ export class PipelineRunController {
     }
   };
 
-  getRunArtifacts: RequestHandler = async (req, res) => {
+  getRunArtifacts = async (req: TypedRequest, res: Response) => {
     try {
       const { id } = req.params;
       const artifacts = await engineService.getBuildArtifacts(id);
@@ -209,7 +235,7 @@ export class PipelineRunController {
     }
   };
   
-  updateRunStatus: RequestHandler = async (req, res) => {
+  updateRunStatus = async (req: TypedRequest, res: Response) => {
     try {
       const { id } = req.params;
       const { status, stepResults, logs, error } = req.body;

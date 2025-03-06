@@ -89,11 +89,15 @@ export class EngineService {
         steps: typeof dbPipeline.steps === 'string' ? JSON.parse(dbPipeline.steps) : dbPipeline.steps,
         triggers: dbPipeline.triggers ? (typeof dbPipeline.triggers === 'string' ? JSON.parse(dbPipeline.triggers) : dbPipeline.triggers) : undefined,
         schedule: dbPipeline.schedule ? (typeof dbPipeline.schedule === 'string' ? JSON.parse(dbPipeline.schedule) : dbPipeline.schedule) : undefined,
-        artifactsEnabled: dbPipeline.artifactsEnabled,
-        artifactPatterns: dbPipeline.artifactPatterns ? (typeof dbPipeline.artifactPatterns === 'string' ? JSON.parse(dbPipeline.artifactPatterns) : dbPipeline.artifactPatterns) : [],
-        artifactRetentionDays: dbPipeline.artifactRetentionDays,
-        artifactStorageType: dbPipeline.artifactStorageType,
-        artifactStorageConfig: dbPipeline.artifactStorageConfig ? (typeof dbPipeline.artifactStorageConfig === 'string' ? JSON.parse(dbPipeline.artifactStorageConfig) : dbPipeline.artifactStorageConfig) : {},
+        webhookConfig: dbPipeline.webhookConfig ? (typeof dbPipeline.webhookConfig === 'string' ? JSON.parse(dbPipeline.webhookConfig) : dbPipeline.webhookConfig) : undefined,
+        artifactsEnabled: dbPipeline.artifactsEnabled || false,
+        artifactPatterns: Array.isArray(dbPipeline.artifactPatterns) ? dbPipeline.artifactPatterns : (typeof dbPipeline.artifactPatterns === 'string' ? JSON.parse(dbPipeline.artifactPatterns) : []),
+        artifactRetentionDays: dbPipeline.artifactRetentionDays || 30,
+        artifactStorageType: dbPipeline.artifactStorageType || 'local',
+        artifactStorageConfig: typeof dbPipeline.artifactStorageConfig === 'string' ? JSON.parse(dbPipeline.artifactStorageConfig) : (dbPipeline.artifactStorageConfig || {}),
+        deploymentEnabled: dbPipeline.deploymentEnabled || false,
+        deploymentPlatform: dbPipeline.deploymentPlatform || undefined,
+        deploymentConfig: typeof dbPipeline.deploymentConfig === 'string' ? JSON.parse(dbPipeline.deploymentConfig) : (dbPipeline.deploymentConfig || {}),
         createdAt: dbPipeline.createdAt,
         updatedAt: dbPipeline.updatedAt
       };
@@ -161,7 +165,7 @@ export class EngineService {
           ].filter(Boolean);
 
           for (const artifactPath of artifactPaths) {
-            if (fs.existsSync(artifactPath)) {
+            if (artifactPath && fs.existsSync(artifactPath)) {
               console.log(`[Engine] Deleting artifacts directory: ${artifactPath}`);
               await fs.promises.rm(artifactPath, { recursive: true, force: true });
               console.log(`[Engine] Successfully deleted artifacts directory for run ${run.id}`);
@@ -189,46 +193,21 @@ export class EngineService {
     try {
       console.log(`[Engine] Starting deletion of artifacts for run ${runId}`);
       
-      // Find the pipeline run with full artifact path
+      // Delete artifacts if they exist
       const run = await prisma.pipelineRun.findUnique({
-        where: { id: runId },
-        select: {
-          id: true,
-          artifactsPath: true,
-          artifactsCollected: true
-        }
+        where: { id: runId }
       });
 
-      if (!run) {
-        throw new NotFoundError('Run not found');
-      }
-
-      // If the run has artifacts, delete them from the filesystem
-      if (run.artifactsCollected && run.artifactsPath) {
+      if (run && run.artifactsPath) {
+        const artifactPath = run.artifactsPath;
         try {
-          // Ensure we have the full absolute path
-          const fullArtifactsPath = path.isAbsolute(run.artifactsPath) 
-            ? run.artifactsPath 
-            : path.join(this.artifactsBaseDir, runId);
-
-          console.log(`[Engine] Checking artifacts path: ${fullArtifactsPath}`);
-          const exists = await fsPromises.access(fullArtifactsPath)
-            .then(() => true)
-            .catch(() => false);
-            
-          if (exists) {
-            console.log(`[Engine] Deleting artifacts directory: ${fullArtifactsPath}`);
-            await fsPromises.rm(fullArtifactsPath, { recursive: true, force: true });
-            console.log(`[Engine] Successfully deleted artifacts directory for run ${runId}`);
-          } else {
-            console.log(`[Engine] Artifacts directory does not exist: ${fullArtifactsPath}`);
+          if (fs.existsSync(artifactPath)) {
+            console.log(`[EngineService] Deleting artifacts at ${artifactPath}`);
+            await fs.promises.rm(artifactPath, { recursive: true, force: true });
           }
         } catch (error) {
-          console.error(`[Engine] Error deleting artifacts directory for run ${runId}:`, error);
-          throw error; // Throw error to ensure proper cleanup
+          console.error(`[EngineService] Error deleting artifacts at ${artifactPath}:`, error);
         }
-      } else {
-        console.log(`[Engine] No artifacts to clean up for run ${runId}`);
       }
 
       console.log(`[Engine] Successfully completed artifact deletion process for run ${runId}`);
@@ -257,7 +236,7 @@ export class EngineService {
 
   async getBuild(id: string): Promise<Build | null> {
     try {
-      // First try to find a pipeline run with this ID
+      // Get the build from the database
       const run = await prisma.pipelineRun.findUnique({
         where: { id },
         include: {
@@ -269,27 +248,19 @@ export class EngineService {
         return null;
       }
 
-      // Transform pipeline run into build format
-      const build: Build = {
+      // Convert to Build format
+      return {
         id: run.id,
         pipelineId: run.pipelineId,
-        status: run.status as any, // Convert status to match Build status type
-        branch: run.branch || 'main',
+        status: run.status as "pending" | "running" | "success" | "failed" | "cancelled",
+        branch: run.branch || '',
         commit: run.commit || '',
-        // Use startedAt as createdAt since that's when the run was created
-        createdAt: typeof run.startedAt === 'string' ? run.startedAt : run.startedAt.toISOString(),
-        // Use completedAt as updatedAt if available, otherwise use startedAt
-        updatedAt: run.completedAt 
-          ? (typeof run.completedAt === 'string' ? run.completedAt : run.completedAt.toISOString())
-          : (typeof run.startedAt === 'string' ? run.startedAt : run.startedAt.toISOString()),
-        startedAt: typeof run.startedAt === 'string' ? run.startedAt : run.startedAt.toISOString(),
-        completedAt: run.completedAt 
-          ? (typeof run.completedAt === 'string' ? run.completedAt : run.completedAt.toISOString())
-          : undefined,
-        stepResults: run.stepResults || []
+        startedAt: run.startedAt.toISOString(),
+        completedAt: run.completedAt?.toISOString(),
+        stepResults: Array.isArray(run.stepResults) ? run.stepResults : (typeof run.stepResults === 'string' ? JSON.parse(run.stepResults) : []),
+        createdAt: run.startedAt.toISOString(),
+        updatedAt: run.completedAt?.toISOString() || run.startedAt.toISOString()
       };
-
-      return build;
     } catch (error) {
       console.error('[EngineService] Error getting build:', error);
       return null;
@@ -297,8 +268,39 @@ export class EngineService {
   }
 
   async updateBuild(id: string, updates: Partial<Build>): Promise<Build> {
-    // TODO: Implement filesystem-based build update
-    throw new Error('Not implemented');
+    try {
+      // Update the pipeline run
+      const run = await prisma.pipelineRun.update({
+        where: { id },
+        data: {
+          status: updates.status,
+          branch: updates.branch,
+          commit: updates.commit,
+          completedAt: updates.completedAt ? new Date(updates.completedAt) : undefined,
+          stepResults: updates.stepResults || []
+        },
+        include: {
+          pipeline: true
+        }
+      });
+
+      // Convert to Build format
+      return {
+        id: run.id,
+        pipelineId: run.pipelineId,
+        status: run.status as "pending" | "running" | "success" | "failed" | "cancelled",
+        branch: run.branch || '',
+        commit: run.commit || '',
+        startedAt: run.startedAt.toISOString(),
+        completedAt: run.completedAt?.toISOString(),
+        stepResults: Array.isArray(run.stepResults) ? run.stepResults : (typeof run.stepResults === 'string' ? JSON.parse(run.stepResults) : []),
+        createdAt: run.startedAt.toISOString(),
+        updatedAt: run.completedAt?.toISOString() || run.startedAt.toISOString()
+      };
+    } catch (error) {
+      console.error('[EngineService] Error updating build:', error);
+      throw error;
+    }
   }
 
   async getBuildLogs(buildId: string): Promise<BuildLog[]> {
@@ -320,13 +322,10 @@ export class EngineService {
 
       // If not found, try to find a build and get its associated run
       if (!run) {
-        const build = await prisma.build.findUnique({
-          where: { id: buildId },
-          include: {
-            pipelineRun: true
-          }
+        const pipelineRun = await prisma.pipelineRun.findUnique({
+          where: { id: buildId }
         });
-        run = build?.pipelineRun;
+        run = pipelineRun;
       }
 
       if (!run || !run.artifactsPath || !run.artifactsCollected) {
@@ -340,6 +339,7 @@ export class EngineService {
       for (const file of files) {
         const relativePath = path.relative(run.artifactsPath, file);
         const stats = await fsPromises.stat(file);
+        const mimeType = mime.lookup(file);
         
         artifacts.push({
           id: `${run.id}-${Buffer.from(relativePath).toString('base64')}`,
@@ -347,8 +347,10 @@ export class EngineService {
           name: path.basename(file),
           path: relativePath,
           size: stats.size,
-          contentType: mime.lookup(file) || undefined,
-          createdAt: stats.birthtime
+          contentType: mimeType || null,
+          createdAt: stats.birthtime,
+          updatedAt: stats.mtime,
+          metadata: {}
         });
       }
 
@@ -361,68 +363,60 @@ export class EngineService {
 
   async getArtifact(id: string): Promise<Artifact | null> {
     try {
-      console.log(`[EngineService] Getting artifact with ID: ${id}`);
+      // Since we don't have an artifacts table, reconstruct from filesystem
+      const [runId, encodedPath] = id.split('-');
+      const run = await this.getPipelineRun(runId);
       
-      // ID format is "{buildId}-{base64EncodedPath}"
-      // Find the position of the first hyphen after the UUID
-      const uuidLength = 36; // Standard UUID length
-      const splitIndex = id.indexOf('-', uuidLength);
-      
-      if (splitIndex === -1) {
-        console.log(`[EngineService] Invalid artifact ID format: ${id}`);
+      if (!run?.artifactsPath) {
         return null;
       }
 
-      const buildId = id.substring(0, uuidLength);
-      const encodedPath = id.substring(splitIndex + 1);
+      const relativePath = Buffer.from(encodedPath, 'base64').toString();
+      const fullPath = path.join(run.artifactsPath, relativePath);
       
-      console.log(`[EngineService] Split ID into buildId: ${buildId}, encodedPath: ${encodedPath}`);
-
-      try {
-        const relativePath = Buffer.from(encodedPath, 'base64').toString('utf-8');
-        console.log(`[EngineService] Decoded path: ${relativePath}`);
-        
-        // Get the pipeline run from the database
-        const run = await prisma.pipelineRun.findUnique({
-          where: { id: buildId }
-        });
-        console.log(`[EngineService] Pipeline run lookup result:`, run);
-
-        if (!run || !run.artifactsCollected) {
-          console.log(`[EngineService] Run not found or artifacts not collected for ID: ${buildId}`);
-          return null;
-        }
-
-        // Ensure we have the full absolute path
-        const artifactsPath = run.artifactsPath && path.isAbsolute(run.artifactsPath)
-          ? run.artifactsPath
-          : path.join(this.artifactsBaseDir, buildId);
-
-        const fullPath = path.join(artifactsPath, relativePath);
-        console.log(`[EngineService] Full artifact path: ${fullPath}`);
-        
-        // Check if file exists and get its stats
-        const stats = await fsPromises.stat(fullPath);
-        
-        const artifact = {
-          id,
-          buildId,
-          name: path.basename(fullPath),
-          path: relativePath,
-          size: stats.size,
-          contentType: mime.lookup(fullPath) || undefined,
-          createdAt: stats.birthtime
-        };
-        
-        console.log(`[EngineService] Found artifact:`, artifact);
-        return artifact;
-      } catch (decodeError) {
-        console.error('[EngineService] Error decoding path:', decodeError);
+      if (!fs.existsSync(fullPath)) {
         return null;
       }
+
+      const stats = await fsPromises.stat(fullPath);
+      const mimeType = mime.lookup(fullPath);
+
+      return {
+        id,
+        buildId: runId,
+        name: path.basename(fullPath),
+        path: relativePath,
+        size: stats.size,
+        contentType: mimeType || null,
+        createdAt: stats.birthtime,
+        updatedAt: stats.mtime,
+        metadata: {}
+      };
     } catch (error) {
       console.error('[EngineService] Error getting artifact:', error);
       return null;
+    }
+  }
+
+  async deleteArtifact(id: string): Promise<void> {
+    const artifact = await this.getArtifact(id);
+    if (!artifact) {
+      throw new NotFoundError('Artifact not found');
+    }
+
+    // Get the run to find the artifact path
+    const run = await this.getPipelineRun(artifact.buildId);
+    if (!run?.artifactsPath) {
+      throw new NotFoundError('Artifact path not found');
+    }
+
+    // Delete the artifact file from storage
+    const artifactPath = path.join(run.artifactsPath, artifact.path);
+    try {
+      await fsPromises.unlink(artifactPath);
+    } catch (error) {
+      console.warn(`Failed to delete artifact file at ${artifactPath}:`, error);
+      throw error;
     }
   }
 
@@ -504,19 +498,17 @@ export class EngineService {
       console.log(`[EngineService] Initializing DeploymentService`);
       const deploymentService = new DeploymentService();
       
-      // Trigger deployment asynchronously
-      // Note: We don't await this to avoid blocking the caller, but we still handle errors
-      console.log(`[EngineService] Calling deployPipelineRun asynchronously for run ${runId}`);
-      deploymentService.deployPipelineRun(runId)
-        .then(result => {
-          console.log(`[EngineService] Deployment for run ${runId} completed with status: ${result.success ? 'success' : 'failure'}`);
-          if (!result.success) {
-            console.error(`[EngineService] Deployment failed: ${result.message}`);
-          }
-        })
-        .catch(error => {
-          console.error(`[EngineService] Error during deployment for run ${runId}:`, error);
+      // Deploy the pipeline run if deployment is enabled
+      if (run.pipeline.deploymentEnabled) {
+        const deployConfig = typeof run.pipeline.deploymentConfig === 'string' 
+          ? JSON.parse(run.pipeline.deploymentConfig) 
+          : (run.pipeline.deploymentConfig || {});
+          
+        await deploymentService.deployPipelineRun(runId, {
+          platform: run.pipeline.deploymentPlatform || 'default',
+          config: deployConfig
         });
+      }
       
       console.log(`[EngineService] Deployment for run ${runId} triggered in the background`);
     } catch (error) {

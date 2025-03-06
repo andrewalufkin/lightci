@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import type { Request, Response, NextFunction } from 'express-serve-static-core';
 import { PipelineController } from '../controllers/pipeline.controller';
 import { PipelineService } from '../services/pipeline.service';
 import { WorkspaceService } from '../services/workspace.service';
@@ -7,6 +8,7 @@ import { authenticate } from '../middleware/auth';
 import { EngineService } from '../services/engine.service';
 import { SchedulerService } from '../services/scheduler.service';
 import { PipelineRunnerService } from '../services/pipeline-runner.service';
+import type { AuthenticatedRequest } from '../types/auth';
 
 const router = Router();
 const workspaceService = new WorkspaceService();
@@ -118,38 +120,50 @@ const pipelineSchema = {
 };
 
 // List all pipelines
-router.get('/', authenticate, pipelineController.listPipelines.bind(pipelineController));
+router.get('/', authenticate, (req: Request, res: Response, next: NextFunction) => {
+  return pipelineController.listPipelines(req as AuthenticatedRequest, res).catch(next);
+});
 
 // Create new pipeline
 router.post('/', 
-  authenticate, 
+  authenticate,
   validateSchema(pipelineSchema),
-  pipelineController.createPipeline.bind(pipelineController)
+  (req: Request, res: Response, next: NextFunction) => {
+    return pipelineController.createPipeline(req as AuthenticatedRequest, res).catch(next);
+  }
 );
 
 // Get pipeline details
 router.get('/:id', 
-  authenticate, 
-  pipelineController.getPipeline.bind(pipelineController)
+  authenticate,
+  (req: Request, res: Response, next: NextFunction) => {
+    return pipelineController.getPipeline(req as AuthenticatedRequest, res).catch(next);
+  }
 );
 
 // Update pipeline
 router.put('/:id',
   authenticate,
   validateSchema(pipelineSchema),
-  pipelineController.updatePipeline.bind(pipelineController)
+  (req: Request, res: Response, next: NextFunction) => {
+    return pipelineController.updatePipeline(req as AuthenticatedRequest, res).catch(next);
+  }
 );
 
 // Delete pipeline
 router.delete('/:id',
   authenticate,
-  pipelineController.deletePipeline.bind(pipelineController)
+  (req: Request, res: Response, next: NextFunction) => {
+    return pipelineController.deletePipeline(req as AuthenticatedRequest, res).catch(next);
+  }
 );
 
 // Trigger pipeline
 router.post('/:id/trigger',
   authenticate,
-  pipelineController.triggerPipeline.bind(pipelineController)
+  (req: Request, res: Response, next: NextFunction) => {
+    return pipelineController.triggerPipeline(req as AuthenticatedRequest, res).catch(next);
+  }
 );
 
 export { router as pipelineRouter };

@@ -4,7 +4,7 @@ const prisma = new PrismaClient();
 
 export class UserService {
   async findById(id: string) {
-    return prisma.User.findUnique({
+    return prisma.user.findUnique({
       where: { id },
       select: {
         id: true,
@@ -18,7 +18,7 @@ export class UserService {
   }
 
   async findByEmail(email: string) {
-    return prisma.User.findUnique({
+    return prisma.user.findUnique({
       where: { email },
       select: {
         id: true,

@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express-serve-static-core';
 import { hashPassword, comparePasswords, generateJWT, generateAPIKey } from '../utils/auth.utils';
 import { registerSchema, loginSchema, createApiKeySchema, updateUserSchema } from '../utils/validation.schemas';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
@@ -8,10 +8,12 @@ export async function register(req: Request, res: Response) {
   try {
     console.log('Starting registration process with body:', JSON.stringify(req.body, null, 2));
     
+    console.log('Attempting to validate with Zod schema');
     const validatedData = registerSchema.parse(req.body);
-    console.log('Validation passed successfully:', validatedData);
+    console.log('Zod validation passed successfully:', validatedData);
 
     // Check if user already exists
+    console.log('Checking for existing user with email or username');
     const existingUser = await prisma.user.findFirst({
       where: {
         OR: [
@@ -24,7 +26,8 @@ export async function register(req: Request, res: Response) {
     if (existingUser) {
       console.log('Registration failed: User already exists with email or username:', {
         email: validatedData.email,
-        username: validatedData.username
+        username: validatedData.username,
+        existingUserId: existingUser.id
       });
       return res.status(400).json({
         error: 'User with this email or username already exists',
@@ -34,8 +37,15 @@ export async function register(req: Request, res: Response) {
     console.log('No existing user found, proceeding with user creation');
 
     // Create user
+    console.log('Hashing password');
     const hashedPassword = await hashPassword(validatedData.password);
     console.log('Password hashed successfully');
+
+    console.log('Creating user with data:', {
+      email: validatedData.email,
+      username: validatedData.username,
+      fullName: validatedData.fullName
+    });
 
     const user = await prisma.user.create({
       data: {
@@ -55,14 +65,16 @@ export async function register(req: Request, res: Response) {
     console.log('User created successfully:', { userId: user.id, email: user.email });
 
     // Create default notification preferences
+    console.log('Creating default notification preferences for user:', user.id);
     await prisma.notificationPreference.create({
       data: {
         userId: user.id,
       },
     });
-    console.log('Default notification preferences created for user:', user.id);
+    console.log('Default notification preferences created successfully');
 
     // Generate JWT
+    console.log('Generating JWT token');
     const token = generateJWT(user);
     console.log('JWT token generated successfully');
 
@@ -71,14 +83,24 @@ export async function register(req: Request, res: Response) {
       token,
     });
   } catch (error) {
-    console.error('Registration error:', {
-      name: error.name,
-      message: error.message,
-      stack: error.stack,
-      cause: error.cause
-    });
-    return res.status(400).json({
-      error: error instanceof Error ? error.message : 'Invalid request data',
+    console.error('Error in register:', error);
+    if (error instanceof Error) {
+      // Handle validation errors
+      if (error.name === 'ZodError') {
+        console.error('Zod validation error:', error.message);
+        return res.status(400).json({
+          error: 'Validation failed',
+          details: error.message
+        });
+      }
+      // Handle other known errors
+      return res.status(400).json({
+        error: error.message
+      });
+    }
+    // Handle unknown errors
+    res.status(500).json({
+      error: 'An unexpected error occurred'
     });
   }
 }

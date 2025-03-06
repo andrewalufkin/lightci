@@ -1,14 +1,27 @@
-import { Request, Response } from 'express';
+import { Request, Response } from 'express-serve-static-core';
 import { ParamsDictionary } from 'express-serve-static-core';
 import { EngineService } from '../services/engine.service';
 import { NotFoundError, ValidationError } from '../utils/errors';
 import * as path from 'path';
 import * as fs from 'fs';
+import { Readable } from 'stream';
+
+interface ArtifactUploadBody {
+  buildId: string;
+  name: string;
+  contentType?: string;
+  size?: number;
+  metadata?: any;
+}
+
+interface ArtifactParams {
+  id: string;
+}
 
 export class ArtifactController {
   constructor(private engineService: EngineService) {}
 
-  async downloadArtifact(req: Request, res: Response) {
+  async downloadArtifact(req: Request<ArtifactParams>, res: Response) {
     try {
       const { id } = req.params;
       console.log(`[ArtifactController] Download request for artifact ID: ${id}`);
@@ -84,12 +97,12 @@ export class ArtifactController {
     }
   }
 
-  async uploadArtifact(req: Request, res: Response) {
+  async uploadArtifact(req: Request<{}, any, ArtifactUploadBody>, res: Response) {
     try {
       const { buildId, name, contentType } = req.body;
 
       if (!buildId || !name) {
-        throw new ValidationError('Build ID and artifact name are required');
+        throw new Error('Missing required fields: buildId and name');
       }
 
       // Ensure the build exists
@@ -103,38 +116,34 @@ export class ArtifactController {
       const artifact = await this.engineService.createArtifact({
         buildId,
         name,
-        contentType,
+        contentType: contentType || 'application/octet-stream',
         size: req.body.size || 0,
         metadata: req.body.metadata
       });
 
       res.status(201).json(artifact);
-    } catch (error) {
-      if (error instanceof ValidationError) {
+    } catch (error: any) {
+      if (error.message.includes('validation')) {
         res.status(400).json({ error: error.message });
       } else if (error instanceof NotFoundError) {
         res.status(404).json({ error: error.message });
       } else {
+        console.error('Error uploading artifact:', error);
         res.status(500).json({ error: 'Failed to upload artifact' });
       }
     }
   }
 
-  async deleteArtifact(req: Request, res: Response) {
+  async deleteArtifact(req: Request<{ id: string }>, res: Response) {
     try {
       const { id } = req.params;
-      const artifact = await this.engineService.getArtifact(id);
-      
-      if (!artifact) {
-        throw new NotFoundError('Artifact not found');
-      }
-
       await this.engineService.deleteArtifact(id);
       res.status(204).send();
     } catch (error) {
       if (error instanceof NotFoundError) {
         res.status(404).json({ error: error.message });
       } else {
+        console.error('Error deleting artifact:', error);
         res.status(500).json({ error: 'Failed to delete artifact' });
       }
     }

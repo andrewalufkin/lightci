@@ -1,12 +1,10 @@
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { authConfig } from '../config/auth.config';
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const jwt = require('jsonwebtoken');
+import jwt from 'jsonwebtoken';
 
 export interface JWTPayload {
-  userId: string;
+  id: string;
   email: string;
   username?: string;
 }
@@ -27,7 +25,7 @@ export async function comparePasswords(password: string, hashedPassword: string)
 
 export function generateJWT(user: { id: string; email: string; username?: string | null }): string {
   const payload: JWTPayload = {
-    userId: user.id,
+    id: user.id,
     email: user.email,
     username: user.username || undefined,
   };

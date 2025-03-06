@@ -4,7 +4,8 @@ export interface Artifact {
   name: string;
   path: string;
   size: number;
-  contentType?: string;
+  contentType: string | null;
   metadata?: Record<string, string>;
   createdAt: Date;
+  updatedAt: Date;
 } 

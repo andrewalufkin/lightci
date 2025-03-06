@@ -2,13 +2,11 @@ import { db } from './database.service';
 import { Pipeline, PipelineConfig } from '../models/Pipeline';
 import { Step } from '../models/Step';
 import { PaginatedResult } from '../models/types';
-import { PrismaClient } from '@prisma/client';
 import { DatabasePipeline } from './database.service';
 import { EngineService } from './engine.service';
 import { GitHubService } from '../services/github.service';
 import { SchedulerService } from './scheduler.service';
-
-const prisma = new PrismaClient();
+import { prisma } from '../lib/prisma';
 
 export class PipelineService {
   private githubService: GitHubService;
@@ -67,7 +65,7 @@ export class PipelineService {
           currentStatus: step.status
         });
 
-        const latestStepResult = latestStepResults.find(sr => 
+        const latestStepResult = latestStepResults.find((sr: { id?: string; name: string; status: string }) => 
           (step.id && sr.id === step.id) || (!step.id && sr.name === step.name)
         );
 
@@ -108,7 +106,7 @@ export class PipelineService {
           }
         } else if (hasFailedStep) {
           // Don't set any status for steps after a failure
-          delete step.status;
+          step.status = undefined;
           console.log('[PipelineService] Removed status for step after failure:', {
             stepName: step.name
           });
@@ -310,5 +308,152 @@ export class PipelineService {
       throw new Error('Pipeline not found or access denied');
     }
     await db.deletePipeline(id);
+  }
+
+  /**
+   * Finds a pipeline by repository URL
+   * This accounts for different URL formats (github.com, gitlab.com)
+   */
+  public async findPipelineByRepository(repositoryUrl: string): Promise<DatabasePipeline | null> {
+    // Normalize repository URL by removing .git suffix and trailing slashes
+    const normalizedUrl = repositoryUrl.replace(/\.git$/, '').replace(/\/$/, '');
+    
+    // Extract repository name for more flexible matching
+    const repoMatch = normalizedUrl.match(/([^\/]+\/[^\/]+)$/);
+    const repoName = repoMatch ? repoMatch[1] : '';
+    
+    // Log the repository URL for debugging
+    console.log(`[PipelineService] Finding pipeline for repository: ${normalizedUrl}`);
+    
+    // Try to find by exact URL first
+    const pipeline = await prisma.pipeline.findFirst({
+      where: {
+        repository: normalizedUrl
+      }
+    });
+    
+    if (pipeline) {
+      return {
+        id: pipeline.id,
+        name: pipeline.name,
+        repository: pipeline.repository,
+        description: pipeline.description || undefined,
+        defaultBranch: pipeline.defaultBranch,
+        steps: pipeline.steps,
+        triggers: pipeline.triggers,
+        schedule: pipeline.schedule,
+        webhookConfig: pipeline.webhookConfig,
+        status: pipeline.status,
+        createdAt: pipeline.createdAt,
+        updatedAt: pipeline.updatedAt,
+        artifactsEnabled: pipeline.artifactsEnabled,
+        artifactPatterns: pipeline.artifactPatterns,
+        artifactRetentionDays: pipeline.artifactRetentionDays,
+        artifactStorageType: pipeline.artifactStorageType,
+        artifactStorageConfig: pipeline.artifactStorageConfig,
+        deploymentEnabled: pipeline.deploymentEnabled,
+        deploymentPlatform: pipeline.deploymentPlatform || undefined,
+        deploymentConfig: pipeline.deploymentConfig
+      };
+    }
+    
+    // If not found and we have a repo name, try more flexible matching
+    if (repoName) {
+      console.log(`[PipelineService] Trying flexible matching with repo name: ${repoName}`);
+      
+      // Get all pipelines (limited to avoid performance issues)
+      const pipelines = await prisma.pipeline.findMany({
+        take: 10,
+        orderBy: {
+          updatedAt: 'desc'
+        }
+      });
+      
+      // Find a pipeline where the repository URL contains the same repo name
+      const matchingPipeline = pipelines.find(p => {
+        const pipelineRepoMatch = p.repository.match(/([^\/]+\/[^\/]+)(?:\.git)?$/);
+        const pipelineRepoName = pipelineRepoMatch ? pipelineRepoMatch[1] : '';
+        return pipelineRepoName === repoName;
+      });
+      
+      if (matchingPipeline) {
+        console.log(`[PipelineService] Found matching pipeline through flexible matching: ${matchingPipeline.id}`);
+        return {
+          id: matchingPipeline.id,
+          name: matchingPipeline.name,
+          repository: matchingPipeline.repository,
+          description: matchingPipeline.description || undefined,
+          defaultBranch: matchingPipeline.defaultBranch,
+          steps: matchingPipeline.steps,
+          triggers: matchingPipeline.triggers,
+          schedule: matchingPipeline.schedule,
+          webhookConfig: matchingPipeline.webhookConfig,
+          status: matchingPipeline.status,
+          createdAt: matchingPipeline.createdAt,
+          updatedAt: matchingPipeline.updatedAt,
+          artifactsEnabled: matchingPipeline.artifactsEnabled,
+          artifactPatterns: matchingPipeline.artifactPatterns,
+          artifactRetentionDays: matchingPipeline.artifactRetentionDays,
+          artifactStorageType: matchingPipeline.artifactStorageType,
+          artifactStorageConfig: matchingPipeline.artifactStorageConfig,
+          deploymentEnabled: matchingPipeline.deploymentEnabled,
+          deploymentPlatform: matchingPipeline.deploymentPlatform || undefined,
+          deploymentConfig: matchingPipeline.deploymentConfig
+        };
+      }
+    }
+    
+    console.log(`[PipelineService] No matching pipeline found for repository: ${normalizedUrl}`);
+    return null;
+  }
+
+  /**
+   * Creates a new pipeline run
+   */
+  async createPipelineRun(config: {
+    pipelineId: string;
+    branch: string;
+    commit: string;
+    status: string;
+    triggeredBy: string;
+    repository: string;
+    prNumber?: number;
+  }): Promise<{ id: string }> {
+    console.log(`[PipelineService] Creating pipeline run with config:`, config);
+
+    try {
+      // Create the pipeline run with explicit transaction to ensure it's committed
+      const pipelineRun = await prisma.$transaction(async (tx) => {
+        console.log(`[PipelineService] Starting transaction to create pipeline run...`);
+        
+        const run = await tx.pipelineRun.create({
+          data: {
+            pipelineId: config.pipelineId,
+            branch: config.branch,
+            commit: config.commit,
+            status: config.status || 'pending',
+            startedAt: new Date(),
+            stepResults: [],
+            logs: []
+          }
+        });
+        
+        console.log(`[PipelineService] Created pipeline run in transaction:`, {
+          id: run.id,
+          pipelineId: run.pipelineId,
+          branch: run.branch,
+          commit: run.commit,
+          status: run.status
+        });
+        
+        return run;
+      });
+      
+      console.log(`[PipelineService] Transaction completed, pipeline run created with ID: ${pipelineRun.id}`);
+      return { id: pipelineRun.id };
+    } catch (error) {
+      console.error(`[PipelineService] Error creating pipeline run:`, error);
+      throw error;
+    }
   }
 } 

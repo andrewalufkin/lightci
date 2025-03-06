@@ -1,6 +1,6 @@
 import express from 'express';
-import cors from 'cors';
-import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, ErrorRequestHandler } from 'express-serve-static-core';
+import type { CorsOptions } from 'cors';
 import { pipelineRouter } from './routes/pipelines';
 import { pipelineRunRouter } from './routes/pipeline-runs';
 import { artifactRouter } from './routes/artifacts';
@@ -14,6 +14,7 @@ import { PipelineStateService } from './services/pipeline-state.service';
 import { SchedulerService } from './services/scheduler.service';
 import { PipelineRunnerService } from './services/pipeline-runner.service';
 import { WorkspaceService } from './services/workspace.service';
+import cors from 'cors';
 
 const app = express();
 const pipelineStateService = new PipelineStateService();
@@ -38,7 +39,11 @@ process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
 // Configure middleware
-app.use(cors());
+const corsOptions: CorsOptions = {
+  origin: true, // Allow all origins
+  credentials: true
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Configure routes
@@ -51,18 +56,27 @@ app.use('/api/projects', projectRouter);
 app.use('/api/auth', authRouter);
 
 // Error handling middleware
-app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+const errorHandler = (
+  err: any,
+  _req: Request,
+  res: Response,
+  next: (err?: any) => void
+): Response | void => {
   console.error('Error:', err);
 
   if (err instanceof ValidationError) {
-    res.status(400).json({ error: err.message });
-  } else if (err instanceof NotFoundError) {
-    res.status(404).json({ error: err.message });
-  } else if (err instanceof AuthenticationError) {
-    res.status(401).json({ error: err.message });
-  } else {
-    res.status(500).json({ error: 'Internal server error' });
+    return res.status(400).json({ error: err.message });
+  } 
+  if (err instanceof NotFoundError) {
+    return res.status(404).json({ error: err.message });
+  } 
+  if (err instanceof AuthenticationError) {
+    return res.status(401).json({ error: err.message });
   }
-});
+  
+  return res.status(500).json({ error: 'Internal server error' });
+};
+
+app.use(errorHandler as ErrorRequestHandler);
 
 export default app;

@@ -1,6 +1,7 @@
-import { PrismaClient, Project, Prisma } from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { BadRequestError } from '../errors';
 import { v4 as uuidv4 } from 'uuid';
+import { Prisma } from '@prisma/client';
 
 // Define type-safe enums for project fields
 export const ProjectOwnerType = {
@@ -24,175 +25,62 @@ export type ProjectVisibility = typeof ProjectVisibility[keyof typeof ProjectVis
 export type ProjectStatus = typeof ProjectStatus[keyof typeof ProjectStatus];
 
 export class ProjectService {
-  private prisma: PrismaClient;
-
-  constructor() {
-    this.prisma = new PrismaClient();
-  }
-  async createProject(
-    {
-      name,
-      description,
-      ownerId,
-      ownerType,
-      visibility = ProjectVisibility.PRIVATE,
-      pipelineIds,
-    }: {
-      name: string;
-      description?: string;
-      ownerId: string;
-      ownerType: ProjectOwnerType;
-      visibility?: ProjectVisibility;
-      pipelineIds?: string[];
-    }
-  ): Promise<Project> {
-    // Validate owner exists
-    if (ownerType === ProjectOwnerType.USER) {
-      const user = await this.prisma.user.findUnique({ where: { id: ownerId } });
-      if (!user) {
-        throw new BadRequestError('User not found');
+  async createProject(data: {
+    name: string;
+    description?: string;
+    ownerId: string;
+    ownerType: 'user' | 'organization';
+  }) {
+    const { ownerId, ownerType, ...rest } = data;
+    return prisma.project.create({
+      data: {
+        id: uuidv4(),
+        ...rest,
+        owner_id: ownerId,
+        owner_type: ownerType,
+        updated_at: new Date()
       }
-    } else if (ownerType === ProjectOwnerType.ORGANIZATION) {
-      const org = await this.prisma.organization.findUnique({ where: { id: ownerId } });
-      if (!org) {
-        throw new BadRequestError('Organization not found');
-      }
-    } else {
-      throw new BadRequestError('Invalid owner type');
-    }
-  
-    // Create the project
-    const now = new Date();
-    const projectId = uuidv4();
-    
-    // Insert the project directly using SQL to avoid Prisma's type checking issues
-    await this.prisma.$executeRaw`
-      INSERT INTO projects (
-        id, name, description, owner_id, owner_type, 
-        created_at, updated_at, status, visibility
-      ) VALUES (
-        ${projectId}, ${name}, ${description || ""}, ${ownerId}, ${ownerType}, 
-        ${now}, ${now}, ${ProjectStatus.ACTIVE}, ${visibility}
-      )
-    `;
-    
-    // Add pipelines if needed
-    if (pipelineIds && pipelineIds.length > 0) {
-      await this.prisma.pipeline.updateMany({
-        where: {
-          id: {
-            in: pipelineIds
-          }
-        },
-        data: {
-          projectId
-        }
-      });
-    }
-    
-    // Return the project with pipelines
-    return this.prisma.project.findUnique({
-      where: { id: projectId },
-      include: {
-        pipelines: true
-      }
-    }) as Promise<Project>;
-  }
-  
-  async listProjects(ownerId: string, ownerType: string): Promise<Project[]> {
-    // Use raw SQL to query projects
-    const projects = await this.prisma.$queryRaw<Project[]>`
-      SELECT p.* 
-      FROM projects p
-      WHERE p.owner_id = ${ownerId} AND p.owner_type = ${ownerType}
-    `;
-    
-    // Fetch pipelines for each project
-    const projectsWithPipelines = await Promise.all(
-      projects.map(async (project) => {
-        const pipelines = await this.prisma.pipeline.findMany({
-          where: { projectId: project.id }
-        });
-        return { ...project, pipelines };
-      })
-    );
-    
-    return projectsWithPipelines as Project[];
+    });
   }
 
-  async getProject(id: string): Promise<Project | null> {
-    return this.prisma.project.findUnique({
-      where: { id },
-      include: {
-        pipelines: true
-      }
+  async getProject(id: string) {
+    return prisma.project.findUnique({
+      where: { id }
     });
   }
 
   async updateProject(id: string, data: {
     name?: string;
     description?: string;
-    visibility?: string;
-    defaultBranch?: string;
-    pipelineIds?: string[];
-    settings?: Record<string, any>;
-  }): Promise<Project> {
-    const { pipelineIds, defaultBranch, ...projectData } = data;
-
-    const updateData: any = {
-      ...projectData,
-      updated_at: new Date()
-    };
-    
-    if (defaultBranch) {
-      updateData.default_branch = defaultBranch;
-    }
-
-    // Update the project
-    const project = await this.prisma.project.update({
+  }) {
+    return prisma.project.update({
       where: { id },
-      data: updateData
+      data: {
+        ...data,
+        updated_at: new Date()
+      }
     });
-
-    // Update pipeline associations if needed
-    if (pipelineIds) {
-      // First, disconnect all existing pipelines
-      await this.prisma.pipeline.updateMany({
-        where: {
-          projectId: id
-        },
-        data: {
-          projectId: null
-        }
-      });
-
-      // Then connect the new ones
-      if (pipelineIds.length > 0) {
-        await this.prisma.pipeline.updateMany({
-          where: {
-            id: {
-              in: pipelineIds
-            }
-          },
-          data: {
-            projectId: id
-          }
-        });
-      }
-    }
-
-    // Return the updated project with pipelines
-    return this.prisma.project.findUnique({
-      where: { id },
-      include: {
-        pipelines: true
-      }
-    }) as Promise<Project>;
   }
 
-  async deleteProject(id: string): Promise<Project> {
-    return this.prisma.project.delete({
+  async deleteProject(id: string) {
+    return prisma.project.delete({
       where: { id }
+    });
+  }
+
+  async listProjects(options: {
+    ownerId?: string;
+    ownerType?: 'user' | 'organization';
+    skip?: number;
+    take?: number;
+  }) {
+    const { ownerId, ownerType, ...rest } = options;
+    return prisma.project.findMany({
+      where: {
+        owner_id: ownerId,
+        owner_type: ownerType
+      },
+      ...rest
     });
   }
 } 

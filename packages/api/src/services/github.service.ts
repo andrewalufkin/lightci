@@ -32,12 +32,14 @@ export class GitHubService {
       const octokit = this.createOctokit(token);
       const { owner, repo } = this.extractRepoInfo(repoUrl);
 
+      const webhookUrl = `${this.apiBaseUrl}/api/webhooks/github`;
+      
       // Create webhook
       const response = await octokit.repos.createWebhook({
         owner,
         repo,
         config: {
-          url: `${this.apiBaseUrl}/api/webhooks/github`,
+          url: webhookUrl,
           content_type: 'json',
           secret: this.webhookSecret,
         },
@@ -47,7 +49,7 @@ export class GitHubService {
 
       return {
         id: response.data.id,
-        url: response.data.config.url
+        url: response.data.config?.url || webhookUrl
       };
     } catch (error) {
       console.error('Failed to create GitHub webhook:', error);

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { RequestHandler } from 'express-serve-static-core';
 import { validateSchema } from '../middleware/validation';
 import { authenticate } from '../middleware/auth';
 import { ProjectController } from '../controllers/project.controller';
@@ -44,34 +45,34 @@ const projectSchema = {
 
 // Create new project
 router.post('/', 
-  authenticate, 
+  authenticate as RequestHandler, 
   validateSchema(projectSchema),
-  projectController.createProject.bind(projectController)
+  projectController.createProject.bind(projectController) as unknown as RequestHandler
 );
 
 // List all projects
 router.get('/', 
-  authenticate, 
-  projectController.listProjects.bind(projectController)
+  authenticate as RequestHandler, 
+  projectController.listProjects.bind(projectController) as unknown as RequestHandler
 );
 
 // Get project details
 router.get('/:id', 
-  authenticate, 
-  projectController.getProject.bind(projectController)
+  authenticate as RequestHandler, 
+  projectController.getProject.bind(projectController) as unknown as RequestHandler
 );
 
 // Update project
 router.put('/:id',
-  authenticate,
+  authenticate as RequestHandler,
   validateSchema(projectSchema),
-  projectController.updateProject.bind(projectController)
+  projectController.updateProject.bind(projectController) as unknown as RequestHandler
 );
 
 // Delete project
 router.delete('/:id',
-  authenticate,
-  projectController.deleteProject.bind(projectController)
+  authenticate as RequestHandler,
+  projectController.deleteProject.bind(projectController) as unknown as RequestHandler
 );
 
 export { router as projectRouter }; 

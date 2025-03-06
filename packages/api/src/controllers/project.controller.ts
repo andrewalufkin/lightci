@@ -1,148 +1,181 @@
-import { Request, Response } from 'express';
+import express from 'express';
+import type { Request, Response } from 'express-serve-static-core';
 import { ProjectService } from '../services/project.service';
-import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
-import { PrismaClient } from '@prisma/client';
-import { v4 as uuidv4 } from 'uuid';
+import { ProjectOwnerType, ProjectVisibility, CreateProjectInput, UpdateProjectInput } from '../models/Project';
+
+interface ProjectRequestBody {
+  name?: string;
+  description?: string;
+  visibility?: ProjectVisibility;
+  defaultBranch?: string;
+  pipelineIds?: string[];
+  settings?: Record<string, any>;
+}
+
+// Define the shape of our request without extending Express types
+interface ProjectRequest {
+  body: ProjectRequestBody;
+  user?: {
+    id: string;
+    [key: string]: any;
+  };
+  params: {
+    id?: string;
+    [key: string]: string | undefined;
+  };
+}
+
+interface ProjectParams {
+  id: string;
+}
+
+interface ProjectResponse {
+  id: string;
+  name: string;
+  description?: string;
+  visibility?: ProjectVisibility;
+  owner_id: string;
+  [key: string]: any;
+}
+
+interface RequestWithUser extends Request<ProjectParams, ProjectResponse, ProjectRequestBody> {
+  user?: {
+    id: string;
+    [key: string]: any;
+  };
+}
 
 export class ProjectController {
   constructor(private projectService: ProjectService) {}
 
-  async createProject(req: Request, res: Response): Promise<void> {
+  async createProject(req: Request & ProjectRequest, res: Response): Promise<Response> {
     try {
-      const userId = req.user?.id;
-      if (!userId) {
-        res.status(401).json({ error: 'Unauthorized' });
-        return;
+      if (!req.user?.id) {
+        return res.status(401).json({ error: 'Unauthorized' });
       }
 
-      console.log('Creating project with data:', {
-        body: req.body,
-        userId,
-        user: req.user
-      });
-
-      // Use the project service to create the project
-      const project = await this.projectService.createProject({
-        ...req.body,
-        ownerId: userId,
-        ownerType: 'user'
-      });
-
-      res.status(201).json(project);
-    } catch (error) {
-      console.error('Error creating project:', error);
-      
-      if (error instanceof PrismaClientKnownRequestError) {
-        if (error.code === 'P2002') {
-          res.status(400).json({ error: 'A project with this name already exists for this owner' });
-          return;
-        } else if (error.code === 'P2003') {
-          res.status(400).json({ 
-            error: 'Invalid owner reference. This could mean the user account is not properly set up.',
-            details: error.meta
-          });
-          return;
-        }
-      }
-      
-      if (error instanceof Error) {
-        if (error.message === 'User not found') {
-          res.status(404).json({ error: 'User not found' });
-          return;
-        } else if (error.message === 'Organization not found') {
-          res.status(404).json({ error: 'Organization not found' });
-          return;
-        }
+      if (!req.body.name) {
+        return res.status(400).json({ error: 'Project name is required' });
       }
 
-      res.status(500).json({ error: 'Failed to create project' });
+      const projectData: CreateProjectInput = {
+        name: req.body.name,
+        description: req.body.description,
+        ownerId: req.user.id,
+        ownerType: 'user',
+        visibility: req.body.visibility,
+        pipelineIds: req.body.pipelineIds
+      };
+
+      const project = await this.projectService.createProject(projectData);
+      return res.status(201).json(project);
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        return res.status(401).json({ error: 'A project with this name already exists for this owner' });
+      }
+      if (error.message === 'Invalid owner type') {
+        return res.status(400).json({
+          error: 'Invalid owner type. Must be either "user" or "organization"'
+        });
+      }
+      if (error.message === 'User not found') {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      if (error.message === 'Organization not found') {
+        return res.status(404).json({ error: 'Organization not found' });
+      }
+
+      return res.status(500).json({ error: 'Failed to create project' });
     }
   }
 
-  async listProjects(req: Request, res: Response): Promise<void> {
+  async listProjects(req: Request & ProjectRequest, res: Response): Promise<Response> {
     try {
-      const userId = req.user?.id;
-      if (!userId) {
-        res.status(401).json({ error: 'Unauthorized' });
-        return;
+      if (!req.user?.id) {
+        return res.status(401).json({ error: 'Unauthorized' });
       }
 
-      const projects = await this.projectService.listProjects(userId, 'user');
-      res.json(projects);
+      const projects = await this.projectService.listProjects({ ownerId: req.user.id, ownerType: 'user' });
+      return res.json(projects);
     } catch (error) {
-      console.error('Error listing projects:', error);
-      res.status(500).json({ error: 'Failed to list projects' });
+      return res.status(500).json({ error: 'Failed to list projects' });
     }
   }
 
-  async getProject(req: Request, res: Response): Promise<void> {
+  async getProject(req: Request & ProjectRequest, res: Response): Promise<Response> {
     try {
       const { id } = req.params;
+      if (!id) {
+        return res.status(400).json({ error: 'Project ID is required' });
+      }
+
       const project = await this.projectService.getProject(id);
-
       if (!project) {
-        res.status(404).json({ error: 'Project not found' });
-        return;
+        return res.status(404).json({ error: 'Project not found' });
       }
 
-      // Check if user has access to this project
-      if (project.ownerId !== req.user?.id) {
-        res.status(403).json({ error: 'Forbidden' });
-        return;
+      if (project.owner_id !== req.user?.id) {
+        return res.status(403).json({ error: 'Forbidden' });
       }
 
-      res.json(project);
+      return res.json(project);
     } catch (error) {
-      console.error('Error getting project:', error);
-      res.status(500).json({ error: 'Failed to get project' });
+      return res.status(500).json({ error: 'Failed to get project' });
     }
   }
 
-  async updateProject(req: Request, res: Response): Promise<void> {
+  async updateProject(req: Request & ProjectRequest, res: Response): Promise<Response> {
     try {
       const { id } = req.params;
+      if (!id) {
+        return res.status(400).json({ error: 'Project ID is required' });
+      }
+
       const existingProject = await this.projectService.getProject(id);
-
       if (!existingProject) {
-        res.status(404).json({ error: 'Project not found' });
-        return;
+        return res.status(404).json({ error: 'Project not found' });
       }
 
-      // Check if user has access to this project
-      if (existingProject.ownerId !== req.user?.id) {
-        res.status(403).json({ error: 'Forbidden' });
-        return;
+      if (existingProject.owner_id !== req.user?.id) {
+        return res.status(403).json({ error: 'Forbidden' });
       }
 
-      const project = await this.projectService.updateProject(id, req.body);
-      res.json(project);
+      const updateData: UpdateProjectInput = {
+        name: req.body.name,
+        description: req.body.description,
+        visibility: req.body.visibility,
+        defaultBranch: req.body.defaultBranch,
+        pipelineIds: req.body.pipelineIds,
+        settings: req.body.settings
+      };
+
+      const project = await this.projectService.updateProject(id, updateData);
+      return res.json(project);
     } catch (error) {
-      console.error('Error updating project:', error);
-      res.status(500).json({ error: 'Failed to update project' });
+      return res.status(500).json({ error: 'Failed to update project' });
     }
   }
 
-  async deleteProject(req: Request, res: Response): Promise<void> {
+  async deleteProject(req: Request & ProjectRequest, res: Response): Promise<Response> {
     try {
       const { id } = req.params;
-      const existingProject = await this.projectService.getProject(id);
-
-      if (!existingProject) {
-        res.status(404).json({ error: 'Project not found' });
-        return;
+      if (!id) {
+        return res.status(400).json({ error: 'Project ID is required' });
       }
 
-      // Check if user has access to this project
-      if (existingProject.ownerId !== req.user?.id) {
-        res.status(403).json({ error: 'Forbidden' });
-        return;
+      const existingProject = await this.projectService.getProject(id);
+      if (!existingProject) {
+        return res.status(404).json({ error: 'Project not found' });
+      }
+
+      if (existingProject.owner_id !== req.user?.id) {
+        return res.status(403).json({ error: 'Forbidden' });
       }
 
       await this.projectService.deleteProject(id);
-      res.status(204).send();
+      return res.status(204).send();
     } catch (error) {
-      console.error('Error deleting project:', error);
-      res.status(500).json({ error: 'Failed to delete project' });
+      return res.status(500).json({ error: 'Failed to delete project' });
     }
   }
 } 

@@ -49,14 +49,30 @@ model PipelineRun {
   stepResults        Json      @default("[]")
   logs               Json      @default("[]")
   error              String?
+  artifactsPath      String?   @map("artifacts_path")
   artifactsCollected Boolean   @default(false) @map("artifacts_collected")
   artifactsCount     Int?      @map("artifacts_count")
   artifactsExpireAt  DateTime? @map("artifacts_expire_at")
-  artifactsPath      String?   @map("artifacts_path")
   artifactsSize      Int?      @map("artifacts_size")
   pipeline           Pipeline  @relation(fields: [pipelineId], references: [id])
+  artifacts          Artifact[]
 
   @@map("pipeline_runs")
+}
+
+model Artifact {
+  id          String      @id @default(uuid())
+  buildId     String      @map("build_id")
+  name        String
+  path        String
+  size        Int
+  contentType String?     @map("content_type")
+  metadata    Json?       @default("{}")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+  build       PipelineRun @relation(fields: [buildId], references: [id])
+
+  @@map("artifacts")
 }
 
 model User {

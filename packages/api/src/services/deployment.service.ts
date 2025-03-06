@@ -11,6 +11,42 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { spawn, exec } from 'child_process';
 
+type JsonValue = string | number | boolean | { [key: string]: JsonValue } | JsonValue[];
+
+type PipelineStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+interface PipelineStep {
+  name: string;
+  command: string;
+  [key: string]: JsonValue;
+}
+
+interface PipelineTriggers {
+  events?: ("push" | "pull_request")[];
+  branches?: string[];
+}
+
+interface WebhookConfig {
+  github?: {
+    id: number;
+    url: string;
+  };
+}
+
+interface ExtendedPipeline extends Omit<Pipeline, 'steps' | 'triggers' | 'schedule' | 'webhookConfig' | 'artifactPatterns' | 'artifactStorageConfig'> {
+  workspaceId: string;
+  deploymentConfig: Record<string, JsonValue>;
+  status: PipelineStatus;
+  steps: PipelineStep[];
+  triggers: PipelineTriggers;
+  schedule: Record<string, any>;
+  webhookConfig: WebhookConfig;
+  artifactPatterns: string[];
+  artifactStorageConfig: Record<string, any>;
+  description?: string;
+  deploymentPlatform?: string;
+}
+
 // Create a type for PipelineRun based on the Prisma schema
 type PipelineRun = {
   id: string;
@@ -20,15 +56,15 @@ type PipelineRun = {
   commit?: string | null;
   startedAt: Date;
   completedAt?: Date | null;
-  stepResults: any;
-  logs: any;
+  stepResults: Record<string, JsonValue>;
+  logs: string[];
   error?: string | null;
   artifactsCollected: boolean;
   artifactsCount?: number | null;
   artifactsExpireAt?: Date | null;
   artifactsPath?: string | null;
   artifactsSize?: number | null;
-  pipeline: Pipeline & { workspaceId: string };
+  pipeline: ExtendedPipeline;
 };
 
 // Create an event emitter for deployment events
@@ -44,23 +80,17 @@ export interface DeploymentResult {
 export type DeploymentPlatform = 'aws' | 'aws_ec2' | 'aws_ecs' | 'gcp' | 'azure' | 'kubernetes' | 'custom';
 
 export interface DeploymentConfig {
-  // Common configuration
-  artifactPath?: string;
-  environmentVariables?: Record<string, string>;
-  
-  // AWS EC2 specific configuration
-  awsRegion?: string;
+  platform: string;
+  config: Record<string, any>;
+  instanceId?: string;
+  region?: string;
+  service?: string;
   awsAccessKeyId?: string;
   awsSecretAccessKey?: string;
-  ec2InstanceId?: string;
-  ec2DeployPath?: string;
   ec2SshKey?: string;
   ec2Username?: string;
-  
-  // Other platform configurations can be added as needed
-  service?: string;
-  region?: string; // Common region field used by multiple platforms
-  customSettings?: Record<string, string>;
+  ec2DeployPath?: string;
+  environmentVariables?: Record<string, string>;
 }
 
 export class DeploymentService {
@@ -76,17 +106,20 @@ export class DeploymentService {
   /**
    * Deploys a successful pipeline run based on the pipeline's deployment configuration
    */
-  async deployPipelineRun(runId: string): Promise<DeploymentResult> {
+  async deployPipelineRun(
+    runId: string,
+    config: DeploymentConfig
+  ): Promise<{ success: boolean; message?: string; logs?: string[] }> {
     console.log(`[DeploymentService] Starting deployment for pipeline run ${runId}`);
     try {
       // Get the pipeline run
       console.log(`[DeploymentService] Fetching pipeline run ${runId} from database`);
-      const run = await prisma.pipelineRun.findUnique({
+      const dbRun = await prisma.pipelineRun.findUnique({
         where: { id: runId },
         include: { pipeline: true }
       });
       
-      if (!run) {
+      if (!dbRun) {
         console.error(`[DeploymentService] Pipeline run ${runId} not found`);
         return {
           success: false,
@@ -94,6 +127,31 @@ export class DeploymentService {
           logs: ['Pipeline run not found']
         };
       }
+      
+      // Convert database result to PipelineRun type
+      const run: PipelineRun = {
+        ...dbRun,
+        stepResults: dbRun.stepResults as Record<string, JsonValue>,
+        logs: Array.isArray(dbRun.logs) ? (dbRun.logs as string[]) : [],
+        pipeline: {
+          ...dbRun.pipeline,
+          workspaceId: (dbRun as any).workspaceId || '',
+          status: (dbRun.pipeline.status || 'pending') as PipelineStatus,
+          description: dbRun.pipeline.description || undefined,
+          deploymentPlatform: dbRun.pipeline.deploymentPlatform || undefined,
+          steps: (dbRun.pipeline.steps as any[] || []).map(step => ({
+            ...step,
+            name: step.name || '',
+            command: step.command || ''
+          })),
+          triggers: (dbRun.pipeline.triggers as any || { events: [], branches: [] }) as PipelineTriggers,
+          schedule: (dbRun.pipeline.schedule as Record<string, any>) || {},
+          webhookConfig: (dbRun.pipeline.webhookConfig as WebhookConfig) || {},
+          artifactPatterns: (dbRun.pipeline.artifactPatterns as string[]) || [],
+          artifactStorageConfig: (dbRun.pipeline.artifactStorageConfig as Record<string, any>) || {},
+          deploymentConfig: dbRun.pipeline.deploymentConfig as Record<string, JsonValue>
+        }
+      };
       
       console.log(`[DeploymentService] Found pipeline run ${runId} with status ${run.status}`);
       
@@ -111,9 +169,12 @@ export class DeploymentService {
       
       // Get the deployment platform and config
       const platform = run.pipeline.deploymentPlatform as DeploymentPlatform;
-      const config = run.pipeline.deploymentConfig as any as DeploymentConfig;
+      const deploymentConfig: DeploymentConfig = {
+        ...config,
+        ...(run.pipeline.deploymentConfig as unknown as Partial<DeploymentConfig>)
+      };
       
-      console.log(`[DeploymentService] Deployment platform: ${platform}, config:`, JSON.stringify(config, null, 2));
+      console.log(`[DeploymentService] Deployment platform: ${platform}, config:`, JSON.stringify(deploymentConfig, null, 2));
       
       if (!platform) {
         console.error(`[DeploymentService] No deployment platform configured for pipeline ${run.pipelineId}`);
@@ -126,7 +187,11 @@ export class DeploymentService {
       
       // Convert the run to a build to use existing engine service methods
       console.log(`[DeploymentService] Converting run ${runId} to build`);
-      const build: Build = await this.engineService.getBuild(runId);
+      const buildResult = await this.engineService.getBuild(runId);
+      if (!buildResult) {
+        throw new Error(`Failed to get build for run ${runId}`);
+      }
+      const build: Build = buildResult;
       
       // Emit event that deployment is starting
       console.log(`[DeploymentService] Emitting deployment:start event for run ${runId}`);
@@ -145,10 +210,10 @@ export class DeploymentService {
       let effectivePlatform = platform;
       
       // Debug the config to ensure service is properly detected
-      console.log(`[DeploymentService] Config type: ${typeof config}, service: ${config.service}`);
+      console.log(`[DeploymentService] Config type: ${typeof deploymentConfig}, service: ${deploymentConfig.service}`);
       
       // Make sure config is properly parsed if it's a string
-      const parsedConfig = typeof config === 'string' ? JSON.parse(config) : config;
+      const parsedConfig = typeof deploymentConfig === 'string' ? JSON.parse(deploymentConfig) : deploymentConfig;
       
       if (platform === 'aws' && (parsedConfig.service === 'ec2' || parsedConfig.service === 'ec2')) {
         effectivePlatform = 'aws_ec2';
@@ -254,7 +319,7 @@ export class DeploymentService {
    * Deploy artifacts to an AWS EC2 instance
    */
   private async deployToAwsEc2(
-    run: any,
+    run: PipelineRun,
     config: DeploymentConfig
   ): Promise<DeploymentResult> {
     const logs: string[] = [];
@@ -263,31 +328,31 @@ export class DeploymentService {
       console.log(`[DeploymentService] ${message}`);
     };
 
-    logAndConsole(`Starting deployment to AWS EC2 instance ${config.ec2InstanceId}`);
+    logAndConsole(`Starting deployment to AWS EC2 instance ${config.instanceId}`);
     logAndConsole(`Deployment run ID: ${run.id}`);
     
     try {
       // Create EC2 client with credentials
       logAndConsole('Initializing AWS EC2 client...');
       const ec2Client = new EC2Client({
-        region: config.awsRegion || config.region || 'us-east-1',
+        region: config.region || 'us-east-1',
         credentials: {
           accessKeyId: config.awsAccessKeyId || '',
           secretAccessKey: config.awsSecretAccessKey || ''
         }
       });
-      logAndConsole(`AWS EC2 client initialized for region: ${config.awsRegion || config.region || 'us-east-1'}`);
+      logAndConsole(`AWS EC2 client initialized for region: ${config.region || 'us-east-1'}`);
 
       // Get instance details
-      logAndConsole(`Fetching EC2 instance details for ${config.ec2InstanceId}...`);
+      logAndConsole(`Fetching EC2 instance details for ${config.instanceId}...`);
       const describeCommand = new DescribeInstancesCommand({
-        InstanceIds: [config.ec2InstanceId]
+        InstanceIds: [config.instanceId].filter((id): id is string => typeof id === 'string')
       });
       const instanceData = await ec2Client.send(describeCommand);
       
       const instance = instanceData.Reservations?.[0]?.Instances?.[0];
       if (!instance || !instance.PublicDnsName) {
-        throw new Error(`Unable to find public DNS for instance ${config.ec2InstanceId}`);
+        throw new Error(`Unable to find public DNS for instance ${config.instanceId}`);
       }
       
       // Get instance public DNS name for SSH
@@ -410,13 +475,13 @@ export class DeploymentService {
           logAndConsole('Post-deployment command executed successfully');
         }
         
-        logAndConsole(`Deployment to EC2 instance ${config.ec2InstanceId} completed successfully`);
+        logAndConsole(`Deployment to EC2 instance ${config.instanceId} completed successfully`);
         return {
           success: true,
-          message: `Successfully deployed to EC2 instance ${config.ec2InstanceId}`,
+          message: `Successfully deployed to EC2 instance ${config.instanceId}`,
           logs,
           details: {
-            instanceId: config.ec2InstanceId,
+            instanceId: config.instanceId,
             deployPath: config.ec2DeployPath || '/home/ec2-user/app',
             publicDnsName
           }
@@ -478,19 +543,13 @@ export class DeploymentService {
    * Execute a shell command
    */
   private async executeCommand(command: string): Promise<{ stdout: string; stderr: string }> {
-    console.log(`[DeploymentService] Executing command: ${command}`);
     return new Promise((resolve, reject) => {
-      exec(command, (error: Error, stdout: string, stderr: string) => {
-        if (stdout) console.log(`[DeploymentService] Command stdout: ${stdout}`);
-        if (stderr) console.log(`[DeploymentService] Command stderr: ${stderr}`);
-        
+      exec(command, { encoding: 'utf8' }, (error: Error | null, stdout: string, stderr: string) => {
         if (error) {
-          console.error(`[DeploymentService] Command execution error:`, error);
           reject(error);
-          return;
+        } else {
+          resolve({ stdout, stderr });
         }
-        console.log(`[DeploymentService] Command executed successfully`);
-        resolve({ stdout, stderr });
       });
     });
   }

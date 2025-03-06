@@ -27,7 +27,7 @@ export class SchedulerService {
       const pipelines = await prisma.pipeline.findMany({
         where: {
           schedule: {
-            not: null
+            not: undefined
           }
         }
       });

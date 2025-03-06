@@ -7,11 +7,12 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { glob } from 'glob';
-import { DeploymentService } from './deployment.service';
+import { DeploymentService, DeploymentConfig } from './deployment.service';
 import { EC2Client, DescribeInstancesCommand } from '@aws-sdk/client-ec2';
 import { PipelineStateService } from './pipeline-state.service';
-import { PipelineWithSteps, PipelineStep, StepResult } from '../models/Pipeline';
+import { PipelineWithSteps, PipelineStep } from '../models/Pipeline';
 import { prisma } from '../db';
+import { Step } from '../models/Step';
 
 const execAsync = promisify(exec);
 const prismaClient = new PrismaClient();
@@ -34,6 +35,26 @@ interface ArtifactConfig {
   patterns?: string[];
   retentionDays?: number;
   enabled?: boolean;
+}
+
+interface ExecutionResult {
+  output: string;
+  error?: string;
+}
+
+// Update the status type to include 'running'
+interface PipelineStepResult extends Step {
+  id: string;
+  name: string;
+  command: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  environment: Record<string, string>;
+  runLocation: 'local' | 'deployed';
+  runOnDeployedInstance: boolean;
+  startTime?: Date;
+  endTime?: Date;
+  output?: string;
+  error?: string;
 }
 
 export class PipelineRunnerService {
@@ -70,13 +91,19 @@ export class PipelineRunnerService {
 
   async runPipeline(pipelineId: string, branch: string, commit?: string): Promise<string> {
     // Get pipeline details
-    const pipeline = await prismaClient.pipeline.findUnique({
+    const pipelineData = await prismaClient.pipeline.findUnique({
       where: { id: pipelineId }
-    }) as PipelineWithSteps | null;
+    });
 
-    if (!pipeline) {
+    if (!pipelineData) {
       throw new Error('Pipeline not found');
     }
+
+    // Add workspaceId and cast to PipelineWithSteps
+    const pipeline = {
+      ...pipelineData,
+      workspaceId: 'default' // Add workspaceId directly since it doesn't exist on pipelineData
+    } as unknown as PipelineWithSteps;
 
     // Initialize step results from pipeline steps
     const steps = (typeof pipeline.steps === 'string' ? JSON.parse(pipeline.steps) : pipeline.steps) as PipelineStep[];
@@ -96,14 +123,16 @@ export class PipelineRunnerService {
         id: stepId,
         name: step.name,
         command: step.command,
-        status: 'pending' as StepResult['status'],
+        status: 'pending' as PipelineStepResult['status'],
         environment: step.environment || {},
+        runLocation: (step.runLocation || 'local') as 'local' | 'deployed',
+        runOnDeployedInstance: step.runOnDeployedInstance || false,
         startTime: undefined as Date | undefined,
         endTime: undefined as Date | undefined,
         output: undefined as string | undefined,
         error: undefined as string | undefined
       };
-    }) as StepResult[];
+    });
 
     console.log(`[PipelineRunner] Created step results:`, {
       pipelineId,
@@ -119,7 +148,7 @@ export class PipelineRunnerService {
         branch,
         commit,
         status: 'running',
-        stepResults: stepResults as any,
+        stepResults: JSON.stringify(stepResults),
         logs: []
       }
     });
@@ -140,16 +169,31 @@ export class PipelineRunnerService {
 
   private async handleDeployment(pipeline: PipelineWithSteps, runId: string) {
     console.log(`[PipelineRunner] Starting deployment process for pipeline ${pipeline.id}, run ${runId}`);
-    console.log(`[PipelineRunner] Deployment configuration:`, {
-      platform: pipeline.deploymentPlatform,
-      enabled: pipeline.deploymentEnabled,
-      config: pipeline.deploymentConfig
-    });
+    
+    // Create a valid base DeploymentConfig
+    const baseConfig: DeploymentConfig = {
+      platform: pipeline.deploymentPlatform || 'default',
+      config: {}
+    };
+
+    // Properly structure the deployment config
+    let deployConfig: DeploymentConfig;
+    
+    if (typeof pipeline.deploymentConfig === 'object' && pipeline.deploymentConfig) {
+      deployConfig = {
+        platform: (pipeline.deploymentConfig as any).platform || baseConfig.platform,
+        config: (pipeline.deploymentConfig as any).config || {}
+      };
+    } else {
+      deployConfig = baseConfig;
+    }
+    
+    console.log(`[PipelineRunner] Deployment configuration:`, deployConfig);
 
     const deploymentService = new DeploymentService();
     console.log(`[PipelineRunner] Created deployment service instance`);
     
-    const deployResult = await deploymentService.deployPipelineRun(runId);
+    const deployResult = await deploymentService.deployPipelineRun(runId, deployConfig);
     console.log(`[PipelineRunner] Deployment result:`, {
       success: deployResult.success,
       message: deployResult.message,
@@ -200,22 +244,19 @@ export class PipelineRunnerService {
         });
 
         // Initialize step results
-        const stepResults = steps.map(step => {
-          const stepId = step.id || step.name;
-          return {
-            id: stepId,
-            name: step.name,
-            command: step.command,
-            status: 'pending' as StepResult['status'],
-            environment: step.environment || {},
-            runLocation: step.runLocation,
-            runOnDeployedInstance: step.runOnDeployedInstance,
-            startTime: undefined as Date | undefined,
-            endTime: undefined as Date | undefined,
-            output: undefined as string | undefined,
-            error: undefined as string | undefined
-          };
-        });
+        const stepResults = steps.map(step => ({
+          id: step.id || '',
+          name: step.name,
+          command: step.command,
+          status: 'pending' as PipelineStepResult['status'],
+          environment: step.environment || {},
+          runLocation: (step.runLocation || 'local') as 'local' | 'deployed',
+          runOnDeployedInstance: step.runOnDeployedInstance || false,
+          startTime: undefined as Date | undefined,
+          endTime: undefined as Date | undefined,
+          output: undefined as string | undefined,
+          error: undefined as string | undefined
+        }));
 
         // Execute each step
         for (let i = 0; i < steps.length; i++) {
@@ -235,13 +276,14 @@ export class PipelineRunnerService {
             continue;
           }
 
+          // Use type assertion to ensure TypeScript understands we can set this to 'running'
           stepResult.status = 'running';
           stepResult.startTime = new Date();
 
           await prismaClient.pipelineRun.update({
             where: { id: runId },
             data: {
-              stepResults: stepResults as any
+              stepResults: JSON.stringify(stepResults)
             }
           });
 
@@ -249,7 +291,7 @@ export class PipelineRunnerService {
             ? `git clone ${pipeline.repository} . && git checkout ${branch}`
             : step.command;
 
-          let result;
+          let result: ExecutionResult;
           // Check if this is a deployment step
           if (step.name === 'Deploy' || step.name === 'Deployment' || step.type === 'deploy') {
             console.log(`[PipelineRunner] Handling deployment step ${step.name}:`, {
@@ -274,9 +316,24 @@ export class PipelineRunnerService {
               runOnDeployedInstance: step.runOnDeployedInstance,
               deploymentEnabled: pipeline.deploymentEnabled
             });
+            
+            // Ensure deploymentConfig is properly structured
+            let deploymentConfig: DeploymentConfig;
+            if (typeof pipeline.deploymentConfig === 'object' && pipeline.deploymentConfig) {
+              deploymentConfig = {
+                platform: (pipeline.deploymentConfig as any).platform || 'default',
+                config: (pipeline.deploymentConfig as any).config || {}
+              };
+            } else {
+              deploymentConfig = {
+                platform: 'default',
+                config: {}
+              };
+            }
+            
             result = await this.executeOnDeployedInstance(
               command,
-              pipeline.deploymentConfig,
+              deploymentConfig,
               step.environment || {}
             );
           } else {
@@ -294,18 +351,27 @@ export class PipelineRunnerService {
             );
           }
 
-          if (result.error) {
+          if ('error' in result && result.error) {
             // Update the step status to failed before throwing the error
-            stepResult.status = 'failed';
-            stepResult.error = result.error;
-            stepResult.output = result.output;
-            stepResult.endTime = new Date();
+            const failedStep: PipelineStepResult = {
+              id: step.id || '',
+              name: step.name,
+              command: step.command,
+              status: 'failed',
+              environment: step.environment || {},
+              runLocation: (step.runLocation || 'local') as 'local' | 'deployed',
+              runOnDeployedInstance: step.runOnDeployedInstance || false,
+              startTime: stepResult.startTime,
+              endTime: new Date(),
+              output: result.output,
+              error: result.error
+            };
 
             // Update the pipeline run with the failed step
             await prismaClient.pipelineRun.update({
               where: { id: runId },
               data: {
-                stepResults: stepResults as any,
+                stepResults: JSON.stringify([failedStep]),
                 error: result.error
               }
             });
@@ -313,7 +379,7 @@ export class PipelineRunnerService {
             throw new Error(result.error);
           }
 
-          await this.updateStepStatus(runId, step.id, 'completed', stepResults, result.output);
+          await this.updateStepStatus(runId, step.id || '', 'completed', stepResults, result.output);
 
           if (step.name === 'Build') {
             await this.collectArtifacts(pipeline, runId, workspacePath);
@@ -503,7 +569,7 @@ export class PipelineRunnerService {
       await prismaClient.pipelineRun.update({
         where: { id: runId },
         data: {
-          error: `Failed to collect artifacts: ${error.message}`
+          error: `Failed to collect artifacts: ${error instanceof Error ? error.message : 'Unknown error'}`
         }
       });
     }
@@ -512,12 +578,14 @@ export class PipelineRunnerService {
   // Helper method to execute commands on the deployed instance
   private async executeOnDeployedInstance(
     command: string,
-    deploymentConfig: any,
+    deploymentConfig: DeploymentConfig,
     environment: Record<string, string> = {}
   ): Promise<{ output: string; error?: string }> {
     try {
       // Parse config if it's a string
-      const config = typeof deploymentConfig === 'string' ? JSON.parse(deploymentConfig) : deploymentConfig;
+      const config = typeof deploymentConfig === 'string' 
+        ? JSON.parse(deploymentConfig) 
+        : deploymentConfig.config; // Use the config property from DeploymentConfig
       
       if (!config.awsAccessKeyId || !config.awsSecretAccessKey || !config.awsRegion) {
         throw new Error('Missing required AWS credentials');
@@ -594,8 +662,8 @@ export class PipelineRunnerService {
   private async updateStepStatus(
     runId: string,
     stepId: string,
-    status: StepResult['status'],
-    stepResults: StepResult[],
+    status: PipelineStepResult['status'],
+    stepResults: PipelineStepResult[],
     output: string
   ): Promise<void> {
     const stepResult = stepResults.find(sr => sr.id === stepId);
@@ -611,7 +679,7 @@ export class PipelineRunnerService {
     await prismaClient.pipelineRun.update({
       where: { id: runId },
       data: {
-        stepResults: stepResults as any
+        stepResults: JSON.stringify(stepResults)
       }
     });
   }
