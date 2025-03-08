@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { Request, Response, NextFunction, RequestHandler } from 'express-serve-static-core';
-import { ArtifactController } from '../controllers/artifact.controller';
-import { EngineService } from '../services/engine.service';
-import { authenticate, AuthenticatedRequest } from '../middleware/auth.middleware';
-import { validateSchema } from '../middleware/validation';
+import { ArtifactController } from '../controllers/artifact.controller.js';
+import { EngineService } from '../services/engine.service.js';
+import { authenticate, AuthenticatedRequest } from '../middleware/auth.middleware.js';
+import { validateSchema } from '../middleware/validation.js';
 
 interface ArtifactParams {
   id: string;

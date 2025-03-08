@@ -1,7 +1,7 @@
 import { Request, Response } from 'express-serve-static-core';
 import { PrismaClient, Prisma } from '@prisma/client';
-import { EngineService } from '../services/engine.service';
-import { NotFoundError } from '../utils/errors';
+import { EngineService } from '../services/engine.service.js';
+import { NotFoundError } from '../utils/errors.js';
 
 interface QueryParams {
   page?: string;

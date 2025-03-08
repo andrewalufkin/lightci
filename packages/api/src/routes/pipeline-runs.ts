@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import { Request as ExpressRequest, Response as ExpressResponse } from 'express-serve-static-core';
-import { PipelineRunController, TypedRequest, ListRequest } from '../controllers/pipeline-run.controller';
-import { authenticate, AuthenticatedRequest } from '../middleware/auth.middleware';
+import type { Request, Response } from 'express-serve-static-core';
+import { PipelineRunController, TypedRequest, ListRequest } from '../controllers/pipeline-run.controller.js';
+import { authenticate } from '../middleware/auth.middleware.js';
+import { validateSchema } from '../middleware/validation.js';
 import { RequestHandler } from 'express-serve-static-core';
 
 const router = Router();
@@ -13,7 +14,7 @@ const typedAuthenticate = authenticate as RequestHandler;
 // List all pipeline runs
 router.get('/', 
   typedAuthenticate,
-  async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
+  async (req: Request, res: Response): Promise<void> => {
     await pipelineRunController.listRuns(req as unknown as ListRequest, res);
   }
 );
@@ -21,7 +22,7 @@ router.get('/',
 // Get pipeline run details
 router.get('/:id',
   typedAuthenticate,
-  async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
+  async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
     if (!id) {
       res.status(400).json({ error: "Missing required parameter: id" });
@@ -36,7 +37,7 @@ router.get('/:id',
 // Delete pipeline run
 router.delete('/:id',
   typedAuthenticate,
-  async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
+  async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
     if (!id) {
       res.status(400).json({ error: "Missing required parameter: id" });
@@ -51,7 +52,7 @@ router.delete('/:id',
 // Get pipeline run artifacts
 router.get('/:id/artifacts',
   typedAuthenticate,
-  async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
+  async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
     if (!id) {
       res.status(400).json({ error: "Missing required parameter: id" });
@@ -66,7 +67,7 @@ router.get('/:id/artifacts',
 // Update pipeline run status
 router.put('/:id/status',
   typedAuthenticate,
-  async (req: ExpressRequest, res: ExpressResponse): Promise<void> => {
+  async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
     if (!id) {
       res.status(400).json({ error: "Missing required parameter: id" });

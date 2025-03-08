@@ -1,8 +1,8 @@
-import { Pipeline } from '../models/Pipeline';
-import { EngineService } from './engine.service';
+import { Pipeline } from '../models/Pipeline.js';
+import { EngineService } from './engine.service.js';
 import { PrismaClient } from '@prisma/client';
-import { Build } from '../models/Build';
-import { prisma } from '../db';
+import { Build } from '../models/Build.js';
+import { prisma } from '../db.js';
 import { EventEmitter } from 'events';
 import { EC2Client, DescribeInstancesCommand } from '@aws-sdk/client-ec2';
 import * as fs from 'fs';

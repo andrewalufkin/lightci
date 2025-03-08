@@ -1,6 +1,5 @@
 import { PrismaClient } from '@prisma/client';
 import { PaginatedResult } from '../models/types';
-import { Step } from '../models/Step';
 
 const prisma = new PrismaClient();
 

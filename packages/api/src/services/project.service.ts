@@ -1,5 +1,5 @@
-import { prisma } from '../lib/prisma';
-import { BadRequestError } from '../errors';
+import { prisma } from '../lib/prisma.js';
+import { BadRequestError } from '../errors.js';
 import { v4 as uuidv4 } from 'uuid';
 import { Prisma } from '@prisma/client';
 

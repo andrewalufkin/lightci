@@ -1,5 +1,5 @@
 import { execSync } from 'child_process';
-import { prisma } from '../../lib/prisma';
+import { prisma } from '../../lib/prisma.js';
 
 export async function setupTestDb() {
   try {

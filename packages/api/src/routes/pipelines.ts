@@ -1,17 +1,17 @@
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express-serve-static-core';
-import { PipelineController } from '../controllers/pipeline.controller';
-import { PipelineService } from '../services/pipeline.service';
-import { WorkspaceService } from '../services/workspace.service';
-import { validateSchema } from '../middleware/validation';
-import { authenticate } from '../middleware/auth.middleware';
-import { EngineService } from '../services/engine.service';
-import { SchedulerService } from '../services/scheduler.service';
-import { PipelineRunnerService } from '../services/pipeline-runner.service';
-import type { AuthenticatedRequest } from '../types/auth';
-import { prisma } from '../lib/prisma';
-import { testDb } from '../test/utils/testDb';
-import { MockPipelineRunnerService } from '../test/fixtures/mock-services';
+import { PipelineController } from '../controllers/pipeline.controller.js';
+import { PipelineService } from '../services/pipeline.service.js';
+import { WorkspaceService } from '../services/workspace.service.js';
+import { validateSchema } from '../middleware/validation.js';
+import { authenticate } from '../middleware/auth.middleware.js';
+import { EngineService } from '../services/engine.service.js';
+import { SchedulerService } from '../services/scheduler.service.js';
+import { PipelineRunnerService } from '../services/pipeline-runner.service.js';
+import type { AuthenticatedRequest } from '../types/auth.js';
+import { prisma } from '../lib/prisma.js';
+import { testDb } from '../test/utils/testDb.js';
+import { MockPipelineRunnerService } from '../test/fixtures/mock-services.js';
 
 // Check if we're in a test environment
 const isTest = process.env.NODE_ENV === 'test';

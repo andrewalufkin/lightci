@@ -2,7 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as cron from 'node-cron';
-import { logger } from '../utils/logger';
+import { logger } from '../utils/logger.js';
 
 const prisma = new PrismaClient();
 

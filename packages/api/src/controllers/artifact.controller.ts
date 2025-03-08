@@ -1,7 +1,7 @@
 import { Request, Response } from 'express-serve-static-core';
 import { ParamsDictionary } from 'express-serve-static-core';
-import { EngineService } from '../services/engine.service';
-import { NotFoundError, ValidationError } from '../utils/errors';
+import { EngineService } from '../services/engine.service.js';
+import { NotFoundError, ValidationError } from '../utils/errors.js';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Readable } from 'stream';

@@ -1,15 +1,15 @@
-import { db } from './database.service';
-import { Pipeline, PipelineConfig } from '../models/Pipeline';
-import { Step } from '../models/Step';
-import { PaginatedResult } from '../models/types';
-import { DatabasePipeline } from './database.service';
-import { EngineService } from './engine.service';
-import { GitHubService } from '../services/github.service';
-import { SchedulerService } from './scheduler.service';
+import { db } from './database.service.js';
+import { Pipeline, PipelineConfig } from '../models/Pipeline.js';
+import { Step } from '../models/Step.js';
+import { PaginatedResult } from '../models/types/index.js';
+import { DatabasePipeline } from './database.service.js';
+import { EngineService } from './engine.service.js';
+import { GitHubService } from '../services/github.service.js';
+import { SchedulerService } from './scheduler.service.js';
 import { PrismaClient } from '@prisma/client';
-import { prisma } from '../lib/prisma';
+import { prisma } from '../lib/prisma.js';
 import { Prisma } from '@prisma/client';
-import { ValidationError } from '../utils/errors';
+import { ValidationError } from '../utils/errors.js';
 
 export class PipelineService {
   private githubService: GitHubService;

@@ -1,9 +1,9 @@
 import { Request, Response } from 'express-serve-static-core';
-import { PipelineService } from '../services/pipeline.service';
-import { WorkspaceService } from '../services/workspace.service';
-import { PipelineRunnerService } from '../services/pipeline-runner.service';
-import { Pipeline, PipelineConfig } from '../models/Pipeline';
-import { ValidationError, NotFoundError } from '../utils/errors';
+import { PipelineService } from '../services/pipeline.service.js';
+import { WorkspaceService } from '../services/workspace.service.js';
+import { PipelineRunnerService } from '../services/pipeline-runner.service.js';
+import { Pipeline, PipelineConfig } from '../models/Pipeline.js';
+import { ValidationError, NotFoundError } from '../utils/errors.js';
 
 interface AuthenticatedRequest extends Request {
   user: {

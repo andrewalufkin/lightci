@@ -1,11 +1,11 @@
 import { PrismaClient } from '@prisma/client';
-import { prisma } from '../db';
-import { PipelineRunnerService } from './pipeline-runner.service';
+import { prisma } from '../db.js';
+import { PipelineRunnerService } from './pipeline-runner.service.js';
 import * as cron from 'node-cron';
-import { Pipeline } from '../models/Pipeline';
-import { PipelineService } from './pipeline.service';
-import { EngineService } from './engine.service';
-import { WorkspaceService } from './workspace.service';
+import { Pipeline } from '../models/Pipeline.js';
+import { PipelineService } from './pipeline.service.js';
+import { EngineService } from './engine.service.js';
+import { WorkspaceService } from './workspace.service.js';
 
 export class SchedulerService {
   private scheduledJobs: Map<string, cron.ScheduledTask>;

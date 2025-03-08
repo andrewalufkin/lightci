@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { RequestHandler } from 'express-serve-static-core';
-import { WebhookController } from '../controllers/webhook.controller';
-import { EngineService } from '../services/engine.service';
-import { GitHubService } from '../services/github.service';
-import { PipelineRunnerService } from '../services/pipeline-runner.service';
-import { WorkspaceService } from '../services/workspace.service';
-import { PipelineService } from '../services/pipeline.service';
-import { SchedulerService } from '../services/scheduler.service';
+import { WebhookController } from '../controllers/webhook.controller.js';
+import { EngineService } from '../services/engine.service.js';
+import { GitHubService } from '../services/github.service.js';
+import { PipelineRunnerService } from '../services/pipeline-runner.service.js';
+import { WorkspaceService } from '../services/workspace.service.js';
+import { PipelineService } from '../services/pipeline.service.js';
+import { SchedulerService } from '../services/scheduler.service.js';
+import { authenticate } from '../middleware/auth.middleware.js';
 
 const router = Router();
 

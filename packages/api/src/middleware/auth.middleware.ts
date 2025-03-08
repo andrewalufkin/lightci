@@ -1,8 +1,7 @@
 import type { Request, Response, NextFunction } from 'express-serve-static-core';
-import { AuthenticationError } from '../utils/errors';
-import { prisma } from '../lib/prisma';
-import jwt from 'jsonwebtoken';
-import { verifyJWT } from '../utils/auth.utils';
+import { AuthenticationError } from '../utils/errors.js';
+import { prisma } from '../lib/prisma.js';
+import { verifyJWT } from '../utils/auth.utils.js';
 
 // Constants
 const JWT_SECRET = process.env.JWT_SECRET || 'your-jwt-secret';
@@ -42,8 +41,8 @@ export const authenticate = async (
     try {
       console.log('Using JWT secret:', `${JWT_SECRET.substring(0, 5)}...`);
       
-      // Verify the token
-      const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; email: string };
+      // Verify the token using verifyJWT from auth.utils.js
+      const decoded = verifyJWT(token);
       console.log('Token verified for user ID:', decoded.userId);
       
       // Get the user from the database

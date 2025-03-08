@@ -1,5 +1,5 @@
-import { PipelineRunnerService } from '../../services/pipeline-runner.service';
-import { WorkspaceService } from '../../services/workspace.service';
+import { PipelineRunnerService } from '../../services/pipeline-runner.service.js';
+import { WorkspaceService } from '../../services/workspace.service.js';
 import { PrismaClient } from '@prisma/client';
 
 /**

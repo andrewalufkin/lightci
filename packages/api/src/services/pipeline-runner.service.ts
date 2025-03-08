@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { WorkspaceService } from './workspace.service';
+import { WorkspaceService } from './workspace.service.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
@@ -7,12 +7,12 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { glob } from 'glob';
-import { DeploymentService, DeploymentConfig } from './deployment.service';
+import { DeploymentService, DeploymentConfig } from './deployment.service.js';
 import { EC2Client, DescribeInstancesCommand } from '@aws-sdk/client-ec2';
-import { PipelineStateService } from './pipeline-state.service';
-import { PipelineWithSteps, PipelineStep } from '../models/Pipeline';
-import { prisma } from '../lib/prisma';
-import { Step } from '../models/Step';
+import { PipelineStateService } from './pipeline-state.service.js';
+import { PipelineWithSteps, PipelineStep } from '../models/Pipeline.js';
+import { prisma } from '../lib/prisma.js';
+import { Step } from '../models/Step.js';
 
 const execAsync = promisify(exec);
 

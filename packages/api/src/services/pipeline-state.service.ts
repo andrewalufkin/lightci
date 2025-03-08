@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { prisma } from '../db';
+import { prisma } from '../db.js';
 
 export class PipelineStateService {
   public static readonly PIPELINE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes

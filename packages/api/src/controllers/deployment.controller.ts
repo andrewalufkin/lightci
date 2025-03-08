@@ -1,8 +1,8 @@
 import { Request, Response } from 'express';
-import { DeploymentService, DeploymentResult, DeploymentConfig } from '../services/deployment.service';
-import { NotFoundError } from '../utils/errors';
-import { prisma } from '../db';
-import { RequestWithParams } from '../types/express';
+import { DeploymentService, DeploymentResult, DeploymentConfig } from '../services/deployment.service.js';
+import { NotFoundError } from '../utils/errors.js';
+import { prisma } from '../db.js';
+import { RequestWithParams } from '../types/express.js';
 
 export class DeploymentController {
   private deploymentService: DeploymentService;

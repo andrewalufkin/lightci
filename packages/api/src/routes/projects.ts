@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { RequestHandler } from 'express-serve-static-core';
-import { validateSchema } from '../middleware/validation';
-import { authenticate } from '../middleware/auth.middleware';
-import { ProjectController } from '../controllers/project.controller';
-import { ProjectService } from '../services/project.service';
+import { validateSchema } from '../middleware/validation.js';
+import { authenticate } from '../middleware/auth.middleware.js';
+import { ProjectController } from '../controllers/project.controller.js';
+import { ProjectService } from '../services/project.service.js';
 
 const router = Router();
 const projectService = new ProjectService();

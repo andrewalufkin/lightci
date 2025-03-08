@@ -1,6 +1,8 @@
 import express, { Request, Response } from 'express';
-import { DeploymentController } from '../controllers/deployment.controller';
-import { RequestWithParams } from '../types/express';
+import { DeploymentController } from '../controllers/deployment.controller.js';
+import { RequestWithParams } from '../types/express.js';
+import { Router } from 'express';
+import { authenticate } from '../middleware/auth.middleware.js';
 
 export const deploymentRouter = express.Router();
 const deploymentController = new DeploymentController();

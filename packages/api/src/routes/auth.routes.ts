@@ -1,11 +1,14 @@
 import express from 'express';
 import type { Request, Response, NextFunction, RequestHandler } from 'express-serve-static-core';
 import * as bcrypt from 'bcrypt';
-import { testDb } from '../test/utils/testDb';
-import { AuthenticationError, ValidationError, AuthorizationError } from '../utils/errors';
-import { generateJWT, verifyJWT } from '../utils/auth.utils';
-import type { AuthenticatedRequest } from '../middleware/auth.middleware';
-import { authenticate } from '../middleware/auth.middleware';
+import { testDb } from '../test/utils/testDb.js';
+import { AuthenticationError, ValidationError, AuthorizationError } from '../utils/errors.js';
+import { generateJWT, verifyJWT } from '../utils/auth.utils.js';
+import type { AuthenticatedRequest } from '../middleware/auth.middleware.js';
+import { authenticate } from '../middleware/auth.middleware.js';
+import { Router } from 'express';
+import { validateSchema } from '../middleware/validation.js';
+import * as authController from '../controllers/auth.controller.js';
 
 interface RegisterBody {
   email: string;
