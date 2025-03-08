@@ -12,6 +12,7 @@ import * as mime from 'mime-types';
 import { prisma } from '../db';
 import { DeploymentService } from './deployment.service';
 import { db } from './database.service';
+import { PrismaClient, PipelineRun, Prisma } from '@prisma/client';
 
 export const buildEvents = new EventEmitter();
 
@@ -99,7 +100,8 @@ export class EngineService {
         deploymentPlatform: dbPipeline.deploymentPlatform || undefined,
         deploymentConfig: typeof dbPipeline.deploymentConfig === 'string' ? JSON.parse(dbPipeline.deploymentConfig) : (dbPipeline.deploymentConfig || {}),
         createdAt: dbPipeline.createdAt,
-        updatedAt: dbPipeline.updatedAt
+        updatedAt: dbPipeline.updatedAt,
+        createdById: dbPipeline.createdById || 'system'
       };
 
       console.log(`[Engine] Successfully retrieved pipeline ${id} from database`);
@@ -309,8 +311,46 @@ export class EngineService {
   }
 
   async createArtifact(options: ArtifactCreateOptions): Promise<Artifact> {
-    // TODO: Implement filesystem-based artifact creation
-    throw new Error('Not implemented');
+    const { buildId, name, contentType = 'application/octet-stream', size = 0, metadata = {} } = options;
+
+    // Create artifact directory if it doesn't exist
+    const artifactDir = path.join(this.artifactsBaseDir, buildId);
+    await fs.promises.mkdir(artifactDir, { recursive: true });
+
+    // Create a placeholder file for now
+    // In a real implementation, this would be replaced with actual file content
+    const filePath = path.join(artifactDir, name);
+    await fs.promises.writeFile(filePath, '');
+
+    // Store relative path instead of absolute path
+    const relativePath = name;  // Since we're using the name as the relative path
+    const id = `${buildId}-${Buffer.from(relativePath).toString('base64')}`;
+
+    // Create and return the artifact record
+    const artifact = await prisma.artifact.create({
+      data: {
+        id,  // Use our constructed ID
+        buildId,
+        name,
+        contentType,
+        size,
+        metadata: metadata || Prisma.JsonNull,
+        path: relativePath  // Store the relative path
+      }
+    });
+
+    // Cast the Prisma artifact to our domain type
+    return {
+      id: artifact.id,
+      buildId: artifact.buildId,
+      name: artifact.name,
+      contentType: artifact.contentType || 'application/octet-stream',
+      size: artifact.size,
+      metadata: (artifact.metadata as Record<string, string>) || {},
+      path: artifact.path,
+      createdAt: artifact.createdAt,
+      updatedAt: artifact.updatedAt
+    };
   }
 
   async getBuildArtifacts(buildId: string): Promise<Artifact[]> {
@@ -418,6 +458,11 @@ export class EngineService {
       console.warn(`Failed to delete artifact file at ${artifactPath}:`, error);
       throw error;
     }
+
+    // Delete the artifact from the database
+    await prisma.artifact.delete({
+      where: { id }
+    });
   }
 
   private async listFilesRecursively(dir: string): Promise<string[]> {

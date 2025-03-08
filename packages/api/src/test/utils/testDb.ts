@@ -35,6 +35,15 @@ export async function clearTestDb() {
       prisma.apiKey.deleteMany(),
       prisma.user.deleteMany()
     ]);
+
+    // Verify all tables are empty
+    const tables = ['pipelineRun', 'pipeline', 'apiKey', 'user'] as const;
+    for (const table of tables) {
+      const count = await (prisma[table] as any).count();
+      if (count > 0) {
+        console.warn(`Warning: ${table} table not empty after cleanup (${count} records remain)`);
+      }
+    }
   } catch (error) {
     console.error('Error clearing test database:', error);
     throw error;
@@ -43,7 +52,9 @@ export async function clearTestDb() {
 
 export async function closeTestDb() {
   try {
+    console.log('Closing test database connection...');
     await prisma.$disconnect();
+    console.log('Test database connection closed successfully');
   } catch (error) {
     console.error('Error closing test database connection:', error);
   }

@@ -68,6 +68,7 @@ export interface Pipeline {
   
   createdAt: Date;
   updatedAt: Date;
+  createdById: string;
 }
 
 export interface PipelineStep {

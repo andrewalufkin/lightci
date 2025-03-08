@@ -7,6 +7,7 @@ interface QueryParams {
   page?: string;
   limit?: string;
   pipelineId?: string;
+  status?: string;
 }
 
 interface RouteParams {
@@ -46,9 +47,12 @@ export class PipelineRunController {
       const page = Number(req.query.page) || 1;
       const limit = Number(req.query.limit) || 10;
       const pipelineId = req.query.pipelineId;
+      const status = req.query.status;
 
       // Build the where clause for filtering
-      const where = pipelineId ? { pipelineId } : {};
+      const where: any = {};
+      if (pipelineId) where.pipelineId = pipelineId;
+      if (status) where.status = status;
 
       // Get total count for pagination
       const total = await prisma.pipelineRun.count({ where });
@@ -228,7 +232,12 @@ export class PipelineRunController {
     try {
       const { id } = req.params;
       const artifacts = await engineService.getBuildArtifacts(id);
-      res.json(artifacts);
+      res.json({
+        artifacts: artifacts,
+        count: artifacts.length,
+        size: artifacts.reduce((total, artifact) => total + (artifact.size || 0), 0),
+        path: `/artifacts/${id}`
+      });
     } catch (error) {
       console.error('Error getting run artifacts:', error);
       res.status(500).json({ error: 'Failed to get run artifacts' });
@@ -247,6 +256,15 @@ export class PipelineRunController {
         return;
       }
       
+      // Validate status transitions
+      const validTransitions: Record<string, string[]> = {
+        'pending': ['running', 'failed', 'cancelled'],
+        'running': ['completed', 'failed', 'cancelled'],
+        'completed': [],
+        'failed': [],
+        'cancelled': []
+      };
+
       // First check if the run exists
       const run = await prisma.pipelineRun.findUnique({
         where: { id }
@@ -255,8 +273,17 @@ export class PipelineRunController {
       if (!run) {
         throw new NotFoundError('Run not found');
       }
-      
+
       console.log(`[PipelineRunController] Found run ${id} with current status ${run.status}`);
+
+      // Validate status transition
+      if (!validTransitions[run.status]?.includes(status)) {
+        res.status(400).json({ 
+          error: `Invalid status transition from ${run.status} to ${status}`,
+          message: `Pipeline run cannot transition from ${run.status} to ${status}`
+        });
+        return;
+      }
       
       // Prepare update data
       const updateData: any = { status };
@@ -298,7 +325,12 @@ export class PipelineRunController {
       
       res.json({
         id: updatedRun.id,
-        status: updatedRun.status
+        status: updatedRun.status,
+        stepResults: Array.isArray(updatedRun.stepResults) 
+          ? updatedRun.stepResults 
+          : (typeof updatedRun.stepResults === 'string' 
+            ? JSON.parse(updatedRun.stepResults) 
+            : [])
       });
     } catch (error) {
       console.error('[PipelineRunController] Error updating run status:', error);

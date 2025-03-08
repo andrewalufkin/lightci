@@ -33,6 +33,7 @@ export interface DatabasePipeline {
   deploymentEnabled: boolean;
   deploymentPlatform?: string;
   deploymentConfig?: any;
+  createdById: string;
 }
 
 export class DatabaseService {
@@ -57,7 +58,8 @@ export class DatabaseService {
       artifactStorageConfig: dbPipeline.artifactStorageConfig,
       deploymentEnabled: dbPipeline.deploymentEnabled,
       deploymentPlatform: dbPipeline.deploymentPlatform,
-      deploymentConfig: dbPipeline.deploymentConfig
+      deploymentConfig: dbPipeline.deploymentConfig,
+      createdById: dbPipeline.createdById
     };
   }
 
@@ -143,26 +145,26 @@ export class DatabaseService {
     const updated = await prisma.pipeline.update({
       where: { id },
       data: {
-        ...(pipeline.name && { name: pipeline.name }),
-        ...(pipeline.repository && { repository: pipeline.repository }),
+        ...(pipeline.name !== undefined && { name: pipeline.name }),
+        ...(pipeline.repository !== undefined && { repository: pipeline.repository }),
         ...(pipeline.description !== undefined && { description: pipeline.description }),
-        ...(pipeline.defaultBranch && { defaultBranch: pipeline.defaultBranch }),
-        ...(pipeline.steps && { steps: JSON.stringify(pipeline.steps) }),
-        ...(pipeline.triggers && { triggers: JSON.stringify(pipeline.triggers) }),
-        ...(pipeline.schedule && { schedule: JSON.stringify(pipeline.schedule) }),
-        ...(pipeline.webhookConfig && { webhookConfig: JSON.stringify(pipeline.webhookConfig) }),
+        ...(pipeline.defaultBranch !== undefined && { defaultBranch: pipeline.defaultBranch }),
+        ...(pipeline.steps !== undefined && { steps: JSON.stringify(pipeline.steps) }),
+        ...(pipeline.triggers !== undefined && { triggers: JSON.stringify(pipeline.triggers) }),
+        ...(pipeline.schedule !== undefined && { schedule: JSON.stringify(pipeline.schedule) }),
+        ...(pipeline.webhookConfig !== undefined && { webhookConfig: JSON.stringify(pipeline.webhookConfig) }),
         
         // Artifact configuration
         ...(pipeline.artifactsEnabled !== undefined && { artifactsEnabled: pipeline.artifactsEnabled }),
-        ...(pipeline.artifactPatterns && { artifactPatterns: JSON.stringify(pipeline.artifactPatterns) }),
-        ...(pipeline.artifactRetentionDays && { artifactRetentionDays: pipeline.artifactRetentionDays }),
-        ...(pipeline.artifactStorageType && { artifactStorageType: pipeline.artifactStorageType }),
-        ...(pipeline.artifactStorageConfig && { artifactStorageConfig: JSON.stringify(pipeline.artifactStorageConfig) }),
+        ...(pipeline.artifactPatterns !== undefined && { artifactPatterns: JSON.stringify(pipeline.artifactPatterns) }),
+        ...(pipeline.artifactRetentionDays !== undefined && { artifactRetentionDays: pipeline.artifactRetentionDays }),
+        ...(pipeline.artifactStorageType !== undefined && { artifactStorageType: pipeline.artifactStorageType }),
+        ...(pipeline.artifactStorageConfig !== undefined && { artifactStorageConfig: JSON.stringify(pipeline.artifactStorageConfig) }),
         
         // Deployment configuration
         ...(pipeline.deploymentEnabled !== undefined && { deploymentEnabled: pipeline.deploymentEnabled }),
         ...(pipeline.deploymentPlatform !== undefined && { deploymentPlatform: pipeline.deploymentPlatform }),
-        ...(pipeline.deploymentConfig && { deploymentConfig: JSON.stringify(pipeline.deploymentConfig) })
+        ...(pipeline.deploymentConfig !== undefined && { deploymentConfig: JSON.stringify(pipeline.deploymentConfig) })
       }
     });
     return this.transformPipelineFromDb(updated);

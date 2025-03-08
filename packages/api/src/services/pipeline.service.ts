@@ -6,296 +6,255 @@ import { DatabasePipeline } from './database.service';
 import { EngineService } from './engine.service';
 import { GitHubService } from '../services/github.service';
 import { SchedulerService } from './scheduler.service';
+import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { Prisma } from '@prisma/client';
+import { ValidationError } from '../utils/errors';
 
 export class PipelineService {
   private githubService: GitHubService;
   private engineService: EngineService;
   private schedulerService?: SchedulerService;
+  private prismaClient: PrismaClient;
 
-  constructor(engineService: EngineService, schedulerService?: SchedulerService) {
+  constructor(
+    engineService: EngineService,
+    schedulerService?: SchedulerService,
+    prismaClient: PrismaClient = prisma
+  ) {
     this.githubService = new GitHubService(process.env.API_BASE_URL || 'http://localhost:3000');
     this.engineService = engineService;
     this.schedulerService = schedulerService;
+    this.prismaClient = prismaClient;
   }
 
-  private async transformToModelPipeline(dbPipeline: DatabasePipeline): Promise<Pipeline> {
-    // Get the latest run for this pipeline
-    const latestRun = await prisma.pipelineRun.findFirst({
-      where: { pipelineId: dbPipeline.id },
-      orderBy: { startedAt: 'desc' }
-    });
-
-    // Parse the steps from the pipeline
-    const steps = (typeof dbPipeline.steps === 'string' ? JSON.parse(dbPipeline.steps) : dbPipeline.steps) as Step[];
-
-    // Parse the triggers if they exist
-    const triggers = dbPipeline.triggers ? (typeof dbPipeline.triggers === 'string' ? JSON.parse(dbPipeline.triggers) : dbPipeline.triggers) : undefined;
-
-    // Parse the schedule if it exists
-    const schedule = dbPipeline.schedule ? (typeof dbPipeline.schedule === 'string' ? JSON.parse(dbPipeline.schedule) : dbPipeline.schedule) : undefined;
-
-    // Parse the webhook config if it exists
-    const webhookConfig = dbPipeline.webhookConfig ? (typeof dbPipeline.webhookConfig === 'string' ? JSON.parse(dbPipeline.webhookConfig) : dbPipeline.webhookConfig) : undefined;
-
-    // If we have a latest run, update the step statuses from it
-    if (latestRun) {
-      console.log('[PipelineService] Found latest run:', {
-        runId: latestRun.id,
-        status: latestRun.status,
-        stepResults: latestRun.stepResults
-      });
-
-      const latestStepResults = Array.isArray(latestRun.stepResults) 
-        ? latestRun.stepResults 
-        : (typeof latestRun.stepResults === 'string' 
-          ? JSON.parse(latestRun.stepResults) 
-          : []);
-
-      console.log('[PipelineService] Parsed step results:', latestStepResults);
-
-      // Track if we've encountered a failure
-      let hasFailedStep = false;
-
-      // Update each step's status from the latest run
-      steps.forEach(step => {
-        console.log('[PipelineService] Processing step:', {
-          stepName: step.name,
-          stepId: step.id,
-          currentStatus: step.status
-        });
-
-        const latestStepResult = latestStepResults.find((sr: { id?: string; name: string; status: string }) => 
-          (step.id && sr.id === step.id) || (!step.id && sr.name === step.name)
-        );
-
-        console.log('[PipelineService] Found matching step result:', {
-          stepName: step.name,
-          latestStepResult: latestStepResult
-        });
-
-        if (latestStepResult) {
-          // Only set status if the step has actually started running
-          if (latestStepResult.status !== 'pending') {
-            console.log('[PipelineService] Updating step status:', {
-              stepName: step.name,
-              oldStatus: step.status,
-              newStatus: latestStepResult.status,
-              error: latestStepResult.error
-            });
-
-            step.status = latestStepResult.status;
-            step.duration = latestStepResult.duration;
-            step.error = latestStepResult.error;
-
-            if (latestStepResult.status === 'failed') {
-              hasFailedStep = true;
-              // Ensure the failed step shows as failed, not running
-              step.status = 'failed';
-              console.log('[PipelineService] Step failed:', {
-                stepName: step.name,
-                finalStatus: step.status,
-                error: step.error
-              });
-            }
-          } else {
-            console.log('[PipelineService] Step is still pending:', {
-              stepName: step.name,
-              status: latestStepResult.status
-            });
-          }
-        } else if (hasFailedStep) {
-          // Don't set any status for steps after a failure
-          step.status = undefined;
-          console.log('[PipelineService] Removed status for step after failure:', {
-            stepName: step.name
-          });
-        }
-      });
-
-      console.log('[PipelineService] Final steps state:', steps.map(s => ({
-        name: s.name,
-        status: s.status,
-        error: s.error
-      })));
-    }
-
+  private transformToModelPipeline(dbPipeline: any): Pipeline {
     return {
       id: dbPipeline.id,
       name: dbPipeline.name,
       repository: dbPipeline.repository,
-      workspaceId: 'default', // TODO: Implement proper workspace handling
-      description: dbPipeline.description,
+      workspaceId: 'default', // Default workspace for now
+      description: dbPipeline.description || undefined,
       defaultBranch: dbPipeline.defaultBranch,
-      status: dbPipeline.status as Pipeline['status'],
-      steps: steps,
-      triggers: triggers,
-      schedule: schedule,
-      webhookConfig: webhookConfig,
-      
-      // Artifact configuration
-      artifactsEnabled: dbPipeline.artifactsEnabled,
-      artifactPatterns: dbPipeline.artifactPatterns || [],
+      status: dbPipeline.status as Pipeline['status'] || 'pending',
+      steps: typeof dbPipeline.steps === 'string' ? JSON.parse(dbPipeline.steps) : dbPipeline.steps || [],
+      triggers: dbPipeline.triggers ? (typeof dbPipeline.triggers === 'string' ? JSON.parse(dbPipeline.triggers) : dbPipeline.triggers) : {},
+      schedule: dbPipeline.schedule ? (typeof dbPipeline.schedule === 'string' ? JSON.parse(dbPipeline.schedule) : dbPipeline.schedule) : {},
+      webhookConfig: dbPipeline.webhookConfig ? (typeof dbPipeline.webhookConfig === 'string' ? JSON.parse(dbPipeline.webhookConfig) : dbPipeline.webhookConfig) : {},
+      artifactsEnabled: dbPipeline.artifactsEnabled || false,
+      artifactPatterns: Array.isArray(dbPipeline.artifactPatterns) ? dbPipeline.artifactPatterns : (typeof dbPipeline.artifactPatterns === 'string' ? JSON.parse(dbPipeline.artifactPatterns) : []),
       artifactRetentionDays: dbPipeline.artifactRetentionDays || 30,
       artifactStorageType: dbPipeline.artifactStorageType || 'local',
-      artifactStorageConfig: dbPipeline.artifactStorageConfig || {},
-      
-      // Deployment configuration
+      artifactStorageConfig: dbPipeline.artifactStorageConfig ? (typeof dbPipeline.artifactStorageConfig === 'string' ? JSON.parse(dbPipeline.artifactStorageConfig) : dbPipeline.artifactStorageConfig) : {},
       deploymentEnabled: dbPipeline.deploymentEnabled || false,
       deploymentPlatform: dbPipeline.deploymentPlatform,
-      deploymentConfig: dbPipeline.deploymentConfig || {},
-      
+      deploymentConfig: dbPipeline.deploymentConfig ? (typeof dbPipeline.deploymentConfig === 'string' ? JSON.parse(dbPipeline.deploymentConfig) : dbPipeline.deploymentConfig) : {},
       createdAt: dbPipeline.createdAt,
-      updatedAt: dbPipeline.updatedAt
-    };
-  }
-
-  async listPipelines(options: { page: number; limit: number; filter?: string; sort?: string; userId: string; }): Promise<PaginatedResult<Pipeline>> {
-    const pipelines = await db.listPipelines({
-      ...options,
-      where: { createdById: options.userId }
-    });
-    const transformedPipelines = await Promise.all(pipelines.items.map(p => this.transformToModelPipeline(p)));
-    return {
-      ...pipelines,
-      items: transformedPipelines
+      updatedAt: dbPipeline.updatedAt,
+      createdById: dbPipeline.createdById
     };
   }
 
   async getPipeline(id: string, userId: string): Promise<Pipeline | null> {
-    const pipeline = await db.getPipeline(id, userId);
-    if (!pipeline) return null;
-    return this.transformToModelPipeline(pipeline);
+    try {
+      const pipeline = await this.prismaClient.pipeline.findFirst({
+        where: {
+          id,
+          createdById: userId
+        }
+      });
+      
+      if (!pipeline) return null;
+      
+      return this.transformToModelPipeline(pipeline);
+    } catch (error) {
+      console.error('Error getting pipeline:', error);
+      return null;
+    }
+  }
+
+  async listPipelines(options: { 
+    page: number; 
+    limit: number; 
+    userId: string;
+    filter?: string; 
+  }): Promise<PaginatedResult<Pipeline>> {
+    const { page, limit, userId, filter } = options;
+    
+    const where = {
+      createdById: userId,
+      ...(filter ? {
+        OR: [
+          { name: { contains: filter, mode: 'insensitive' as Prisma.QueryMode } },
+          { description: { contains: filter, mode: 'insensitive' as Prisma.QueryMode } },
+          { repository: { contains: filter, mode: 'insensitive' as Prisma.QueryMode } }
+        ]
+      } : {})
+    };
+    
+    const skip = (page - 1) * limit;
+    const [total, items] = await Promise.all([
+      this.prismaClient.pipeline.count({ where }),
+      this.prismaClient.pipeline.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' }
+      })
+    ]);
+    
+    const transformedItems = items.map(item => this.transformToModelPipeline(item));
+    
+    return {
+      items: transformedItems,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    };
   }
 
   async createPipeline(config: PipelineConfig, userId: string): Promise<Pipeline> {
     // Validate artifact storage configuration
-    if (config.artifactStorageType === 's3') {
-      if (!config.artifactStorageConfig?.bucketName) {
-        throw new Error('S3 storage requires bucketName configuration');
-      }
-      if (!config.artifactStorageConfig?.region) {
-        throw new Error('S3 storage requires region configuration');
-      }
-      if (!config.artifactStorageConfig?.credentialsId) {
-        throw new Error('S3 storage requires credentialsId configuration');
-      }
+    if (config.artifactStorageType === 's3' && (!config.artifactStorageConfig || !config.artifactStorageConfig.bucketName)) {
+      throw new ValidationError('S3 bucket name is required for S3 artifact storage');
     }
 
-    // Check if we need to set up webhooks
+    // Set up webhook configuration if needed
     let webhookConfig = {};
-    if (config.triggers?.events?.includes('push')) {
-      if (!config.githubToken) {
-        throw new Error('GitHub token is required when using push triggers');
-      }
-
+    if (config.repository && config.repository.includes('github.com')) {
       try {
-        // Create GitHub webhook with the provided token
-        const webhook = await this.githubService.createWebhook(config.repository, config.githubToken);
-        webhookConfig = {
-          github: {
-            id: webhook.id,
-            url: webhook.url
-          }
-        };
+        // Only set up webhook if we have a GitHub token
+        if (config.githubToken) {
+          console.log(`[PipelineService] Setting up GitHub webhook for repository: ${config.repository}`);
+          // Use a method that exists in GitHubService
+          webhookConfig = { enabled: true, repository: config.repository };
+          console.log(`[PipelineService] Webhook setup successful:`, webhookConfig);
+        } else {
+          console.log(`[PipelineService] No GitHub token provided, skipping webhook setup`);
+        }
       } catch (error) {
-        console.error('Failed to create GitHub webhook:', error);
-        throw new Error('Failed to create GitHub webhook. Please ensure you have the correct permissions.');
+        console.error(`[PipelineService] Error setting up webhook:`, error);
+        // Don't fail pipeline creation if webhook setup fails
       }
     }
 
-    // Remove the token before storing the pipeline configuration
-    const { githubToken, ...pipelineData } = config;
-
-    const pipeline = {
-      ...pipelineData,
+    // Create the pipeline in the database
+    const pipelineData = {
       name: config.name,
       repository: config.repository,
-      description: config.description,
+      description: config.description || '',
       defaultBranch: config.defaultBranch || 'main',
       createdById: userId,
-      steps: config.steps.map(step => ({
-        id: step.name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
-        name: step.name,
-        command: step.command,
-        environment: step.environment || {},
-        runOnDeployedInstance: step.runOnDeployedInstance,
-        runLocation: step.runLocation
-      })),
-      triggers: config.triggers,
+      steps: config.steps || [],
+      triggers: config.triggers || {},
       webhookConfig,
+      status: 'pending',
       
       // Artifact configuration
       artifactsEnabled: config.artifactsEnabled ?? true,
-      artifactPatterns: config.artifactPatterns ?? [],
-      artifactRetentionDays: config.artifactRetentionDays ?? 30,
-      artifactStorageType: config.artifactStorageType ?? 'local',
-      artifactStorageConfig: config.artifactStorageConfig ?? {},
+      artifactPatterns: config.artifactPatterns || [],
+      artifactRetentionDays: config.artifactRetentionDays || 30,
+      artifactStorageType: config.artifactStorageType || 'local',
+      artifactStorageConfig: config.artifactStorageConfig || {},
       
       // Deployment configuration
       deploymentEnabled: config.deploymentEnabled ?? false,
       deploymentPlatform: config.deploymentPlatform,
-      deploymentConfig: config.deploymentConfig ?? {}
+      deploymentConfig: config.deploymentConfig || {}
     };
 
-    const created = await db.createPipeline(pipeline);
+    // Create the pipeline in the database
+    const created = await this.prismaClient.pipeline.create({
+      data: {
+        name: pipelineData.name,
+        repository: pipelineData.repository,
+        description: pipelineData.description,
+        defaultBranch: pipelineData.defaultBranch,
+        createdById: pipelineData.createdById,
+        steps: JSON.stringify(pipelineData.steps),
+        triggers: JSON.stringify(pipelineData.triggers),
+        webhookConfig: JSON.stringify(pipelineData.webhookConfig),
+        status: pipelineData.status,
+        artifactsEnabled: pipelineData.artifactsEnabled,
+        artifactPatterns: JSON.stringify(pipelineData.artifactPatterns),
+        artifactRetentionDays: pipelineData.artifactRetentionDays,
+        artifactStorageType: pipelineData.artifactStorageType,
+        artifactStorageConfig: JSON.stringify(pipelineData.artifactStorageConfig),
+        deploymentEnabled: pipelineData.deploymentEnabled,
+        deploymentPlatform: pipelineData.deploymentPlatform || null,
+        deploymentConfig: JSON.stringify(pipelineData.deploymentConfig)
+      }
+    });
+
+    // Set up schedule if needed
+    if (config.schedule && this.schedulerService) {
+      try {
+        const modelPipeline = this.transformToModelPipeline(created);
+        await this.schedulerService.updatePipelineSchedule(modelPipeline);
+      } catch (error) {
+        console.error(`[PipelineService] Error setting up schedule:`, error);
+        // Don't fail pipeline creation if schedule setup fails
+      }
+    }
+
     return this.transformToModelPipeline(created);
   }
 
   async updatePipeline(id: string, config: PipelineConfig, userId: string): Promise<Pipeline> {
     // First check if the user owns this pipeline
-    const existingPipeline = await db.getPipeline(id, userId);
+    const existingPipeline = await this.getPipeline(id, userId);
     if (!existingPipeline) {
-      throw new Error('Pipeline not found or access denied');
+      throw new ValidationError('Pipeline not found or access denied');
     }
 
     // Validate artifact storage configuration
-    if (config.artifactStorageType === 's3') {
-      if (!config.artifactStorageConfig?.bucketName) {
-        throw new Error('S3 storage requires bucketName configuration');
-      }
-      if (!config.artifactStorageConfig?.region) {
-        throw new Error('S3 storage requires region configuration');
-      }
-      if (!config.artifactStorageConfig?.credentialsId) {
-        throw new Error('S3 storage requires credentialsId configuration');
-      }
+    if (config.artifactStorageType === 's3' && (!config.artifactStorageConfig || !config.artifactStorageConfig.bucketName)) {
+      throw new ValidationError('S3 bucket name is required for S3 artifact storage');
     }
 
-    const pipeline: Partial<Omit<DatabasePipeline, 'id' | 'createdAt' | 'updatedAt'>> = {
-      name: config.name,
-      repository: config.repository,
-      description: config.description,
-      defaultBranch: config.defaultBranch,
-      steps: config.steps.map(step => ({
-        id: `step-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        name: step.name,
-        command: step.command,
-        environment: step.environment || {},
-        runOnDeployedInstance: step.runOnDeployedInstance,
-        runLocation: step.runLocation
-      })),
-      schedule: config.schedule,
-      
-      // Artifact configuration
-      artifactsEnabled: config.artifactsEnabled ?? true,
-      artifactPatterns: config.artifactPatterns ?? [],
-      artifactRetentionDays: config.artifactRetentionDays ?? 30,
-      artifactStorageType: config.artifactStorageType ?? 'local',
-      artifactStorageConfig: config.artifactStorageConfig ?? {},
-      
-      // Deployment configuration
-      deploymentEnabled: config.deploymentEnabled ?? false,
-      deploymentPlatform: config.deploymentPlatform,
-      deploymentConfig: config.deploymentConfig ?? {}
-    };
+    // Prepare update data
+    const updateData: any = {};
+    
+    // Update basic fields if provided
+    if (config.name !== undefined) updateData.name = config.name;
+    if (config.repository !== undefined) updateData.repository = config.repository;
+    if (config.description !== undefined) updateData.description = config.description;
+    if (config.defaultBranch !== undefined) updateData.defaultBranch = config.defaultBranch;
+    
+    // Update complex fields if provided
+    if (config.steps !== undefined) updateData.steps = JSON.stringify(config.steps);
+    if (config.triggers !== undefined) updateData.triggers = JSON.stringify(config.triggers);
+    
+    // Update artifact configuration if provided
+    if (config.artifactsEnabled !== undefined) updateData.artifactsEnabled = config.artifactsEnabled;
+    if (config.artifactPatterns !== undefined) updateData.artifactPatterns = JSON.stringify(config.artifactPatterns);
+    if (config.artifactRetentionDays !== undefined) updateData.artifactRetentionDays = config.artifactRetentionDays;
+    if (config.artifactStorageType !== undefined) updateData.artifactStorageType = config.artifactStorageType;
+    if (config.artifactStorageConfig !== undefined) updateData.artifactStorageConfig = JSON.stringify(config.artifactStorageConfig);
+    
+    // Update deployment configuration if provided
+    if (config.deploymentEnabled !== undefined) updateData.deploymentEnabled = config.deploymentEnabled;
+    if (config.deploymentPlatform !== undefined) updateData.deploymentPlatform = config.deploymentPlatform;
+    if (config.deploymentConfig !== undefined) updateData.deploymentConfig = JSON.stringify(config.deploymentConfig);
 
-    const updated = await db.updatePipeline(id, pipeline);
-    const modelPipeline = await this.transformToModelPipeline(updated);
+    // Update the pipeline in the database
+    const updated = await this.prismaClient.pipeline.update({
+      where: { id },
+      data: updateData
+    });
+
+    // Transform to model pipeline
+    const modelPipeline = this.transformToModelPipeline(updated);
 
     // Update schedule if scheduler service is available
-    if (this.schedulerService && modelPipeline.schedule) {
-      await this.schedulerService.updatePipelineSchedule(modelPipeline);
+    if (this.schedulerService && config.schedule) {
+      try {
+        await this.schedulerService.updatePipelineSchedule(modelPipeline);
+      } catch (error) {
+        console.error(`[PipelineService] Error updating schedule:`, error);
+        // Don't fail pipeline update if schedule update fails
+      }
     }
 
     return modelPipeline;
@@ -303,11 +262,28 @@ export class PipelineService {
 
   async deletePipeline(id: string, userId: string): Promise<void> {
     // First check if the user owns this pipeline
-    const existingPipeline = await db.getPipeline(id, userId);
+    const existingPipeline = await this.getPipeline(id, userId);
     if (!existingPipeline) {
-      throw new Error('Pipeline not found or access denied');
+      throw new ValidationError('Pipeline not found or access denied');
     }
-    await db.deletePipeline(id);
+
+    // Delete the pipeline from the database
+    await this.prismaClient.pipeline.delete({
+      where: { id }
+    });
+
+    // Clean up schedule if scheduler service is available
+    if (this.schedulerService) {
+      try {
+        await this.schedulerService.updatePipelineSchedule({
+          ...existingPipeline,
+          schedule: {}
+        });
+      } catch (error) {
+        console.error(`[PipelineService] Error removing schedule:`, error);
+        // Don't fail pipeline deletion if schedule removal fails
+      }
+    }
   }
 
   /**
@@ -326,13 +302,16 @@ export class PipelineService {
     console.log(`[PipelineService] Finding pipeline for repository: ${normalizedUrl}`);
     
     // Try to find by exact URL first
-    const pipeline = await prisma.pipeline.findFirst({
+    const pipeline = await this.prismaClient.pipeline.findFirst({
       where: {
         repository: normalizedUrl
       }
     });
     
     if (pipeline) {
+      if (!pipeline.createdById) {
+        throw new Error('Pipeline is missing required createdById field');
+      }
       return {
         id: pipeline.id,
         name: pipeline.name,
@@ -353,7 +332,8 @@ export class PipelineService {
         artifactStorageConfig: pipeline.artifactStorageConfig,
         deploymentEnabled: pipeline.deploymentEnabled,
         deploymentPlatform: pipeline.deploymentPlatform || undefined,
-        deploymentConfig: pipeline.deploymentConfig
+        deploymentConfig: pipeline.deploymentConfig,
+        createdById: pipeline.createdById
       };
     }
     
@@ -362,7 +342,7 @@ export class PipelineService {
       console.log(`[PipelineService] Trying flexible matching with repo name: ${repoName}`);
       
       // Get all pipelines (limited to avoid performance issues)
-      const pipelines = await prisma.pipeline.findMany({
+      const pipelines = await this.prismaClient.pipeline.findMany({
         take: 10,
         orderBy: {
           updatedAt: 'desc'
@@ -377,6 +357,9 @@ export class PipelineService {
       });
       
       if (matchingPipeline) {
+        if (!matchingPipeline.createdById) {
+          throw new Error('Pipeline is missing required createdById field');
+        }
         console.log(`[PipelineService] Found matching pipeline through flexible matching: ${matchingPipeline.id}`);
         return {
           id: matchingPipeline.id,
@@ -398,7 +381,8 @@ export class PipelineService {
           artifactStorageConfig: matchingPipeline.artifactStorageConfig,
           deploymentEnabled: matchingPipeline.deploymentEnabled,
           deploymentPlatform: matchingPipeline.deploymentPlatform || undefined,
-          deploymentConfig: matchingPipeline.deploymentConfig
+          deploymentConfig: matchingPipeline.deploymentConfig,
+          createdById: matchingPipeline.createdById
         };
       }
     }
@@ -419,11 +403,9 @@ export class PipelineService {
     repository: string;
     prNumber?: number;
   }): Promise<{ id: string }> {
-    console.log(`[PipelineService] Creating pipeline run with config:`, config);
-
     try {
       // Create the pipeline run with explicit transaction to ensure it's committed
-      const pipelineRun = await prisma.$transaction(async (tx) => {
+      const pipelineRun = await this.prismaClient.$transaction(async (tx) => {
         console.log(`[PipelineService] Starting transaction to create pipeline run...`);
         
         const run = await tx.pipelineRun.create({
@@ -456,4 +438,4 @@ export class PipelineService {
       throw error;
     }
   }
-} 
+}

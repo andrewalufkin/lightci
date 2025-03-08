@@ -47,7 +47,6 @@ export class PipelineController {
         page,
         limit,
         filter: req.query.filter as string,
-        sort: req.query.sort as string,
         userId: req.user.id
       });
       
@@ -175,8 +174,7 @@ export class PipelineController {
 
       // Delete pipeline
       await this.pipelineService.deletePipeline(id, req.user.id);
-
-      res.status(204).send();
+      res.status(200).send();
     } catch (error) {
       if (error instanceof NotFoundError) {
         res.status(404).json({ error: error.message });
@@ -202,8 +200,7 @@ export class PipelineController {
 
       // Trigger pipeline run
       const runId = await this.pipelineRunnerService.runPipeline(id, targetBranch, commit);
-
-      res.json({
+      res.status(201).json({
         message: 'Pipeline triggered successfully',
         runId,
         status: 'running'

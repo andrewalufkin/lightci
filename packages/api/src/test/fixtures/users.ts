@@ -1,6 +1,6 @@
 import { User } from '@prisma/client';
 import { testDb } from '../utils/testDb';
-import bcrypt from 'bcrypt';
+import * as bcrypt from 'bcrypt';
 
 export const testUser = {
   email: 'test@example.com',

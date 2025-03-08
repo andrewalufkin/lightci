@@ -1,12 +1,9 @@
-export type ProjectOwnerType = 'user' | 'organization';
-export type ProjectVisibility = 'public' | 'private';
+import type { ProjectVisibility } from '../services/project.service';
 
 export interface Project {
   id: string;
   name: string;
   description?: string;
-  owner_id: string;
-  owner_type: ProjectOwnerType;
   created_at: Date;
   updated_at: Date;
   default_branch?: string;
@@ -14,14 +11,29 @@ export interface Project {
   settings?: Record<string, any>;
   visibility: ProjectVisibility;
   status: string;
+  userOwners?: {
+    user: {
+      id: string;
+      email: string;
+      username?: string;
+    };
+  }[];
+  orgOwners?: {
+    organization: {
+      id: string;
+      name: string;
+      slug: string;
+    };
+  }[];
 }
 
 export interface CreateProjectInput {
   name: string;
   description?: string;
-  ownerId: string;
-  ownerType: ProjectOwnerType;
+  userId?: string;
+  organizationId?: string;
   visibility?: ProjectVisibility;
+  defaultBranch?: string;
   pipelineIds?: string[];
 }
 
@@ -30,6 +42,5 @@ export interface UpdateProjectInput {
   description?: string;
   visibility?: ProjectVisibility;
   defaultBranch?: string;
-  pipelineIds?: string[];
   settings?: Record<string, any>;
 } 

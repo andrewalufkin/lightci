@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { Request, Response, NextFunction, RequestHandler } from 'express-serve-static-core';
 import { ArtifactController } from '../controllers/artifact.controller';
 import { EngineService } from '../services/engine.service';
-import { authenticate, AuthenticatedRequest } from '../middleware/auth';
+import { authenticate, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { validateSchema } from '../middleware/validation';
 
 interface ArtifactParams {
@@ -17,10 +17,6 @@ interface ArtifactUploadBody {
   metadata?: Record<string, string>;
 }
 
-const router = Router();
-const engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
-const artifactController = new ArtifactController(engineService);
-
 // Artifact upload schema validation
 const artifactUploadSchema = {
   type: 'object',
@@ -29,7 +25,7 @@ const artifactUploadSchema = {
     buildId: { type: 'string', minLength: 1 },
     name: { type: 'string', minLength: 1 },
     contentType: { type: 'string' },
-    size: { type: 'number', minimum: 0 },
+    size: { type: 'number', minimum: 0, maximum: 100 * 1024 * 1024 }, // 100MB max
     metadata: {
       type: 'object',
       additionalProperties: { type: 'string' }
@@ -37,23 +33,28 @@ const artifactUploadSchema = {
   }
 };
 
-// Download artifact
-router.get('/:id',
-  authenticate as RequestHandler,
-  artifactController.downloadArtifact.bind(artifactController) as unknown as RequestHandler
-);
+export function createArtifactRouter(engineService: EngineService) {
+  const router = Router();
+  const artifactController = new ArtifactController(engineService);
 
-// Upload artifact
-router.post('/',
-  authenticate as RequestHandler,
-  validateSchema(artifactUploadSchema),
-  artifactController.uploadArtifact.bind(artifactController) as unknown as RequestHandler
-);
+  // Download artifact
+  router.get('/:id',
+    authenticate as RequestHandler,
+    artifactController.downloadArtifact.bind(artifactController) as unknown as RequestHandler
+  );
 
-// Delete artifact
-router.delete('/:id',
-  authenticate as RequestHandler,
-  artifactController.deleteArtifact.bind(artifactController) as unknown as RequestHandler
-);
+  // Upload artifact
+  router.post('/',
+    authenticate as RequestHandler,
+    validateSchema(artifactUploadSchema),
+    artifactController.uploadArtifact.bind(artifactController) as unknown as RequestHandler
+  );
 
-export { router as artifactRouter };
+  // Delete artifact
+  router.delete('/:id',
+    authenticate as RequestHandler,
+    artifactController.deleteArtifact.bind(artifactController) as unknown as RequestHandler
+  );
+
+  return router;
+}

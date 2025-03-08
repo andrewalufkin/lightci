@@ -16,6 +16,10 @@ export default {
   },
   setupFilesAfterEnv: ['./src/test/setup.ts'],
   transformIgnorePatterns: [
-    'node_modules/(?!(cors|@types/cors)/.*)'
-  ]
+    'node_modules/(?!(cors|@types/cors|jsonwebtoken)/.*)'
+  ],
+  maxWorkers: 1,
+  testTimeout: 10000,
+  detectOpenHandles: true,
+  forceExit: true
 }; 

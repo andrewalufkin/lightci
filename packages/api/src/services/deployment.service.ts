@@ -65,6 +65,7 @@ type PipelineRun = {
   artifactsPath?: string | null;
   artifactsSize?: number | null;
   pipeline: ExtendedPipeline;
+  createdById: string;
 };
 
 // Create an event emitter for deployment events
@@ -133,23 +134,21 @@ export class DeploymentService {
         ...dbRun,
         stepResults: dbRun.stepResults as Record<string, JsonValue>,
         logs: Array.isArray(dbRun.logs) ? (dbRun.logs as string[]) : [],
+        createdById: dbRun.pipeline.createdById || 'system',
         pipeline: {
           ...dbRun.pipeline,
           workspaceId: (dbRun as any).workspaceId || '',
           status: (dbRun.pipeline.status || 'pending') as PipelineStatus,
           description: dbRun.pipeline.description || undefined,
           deploymentPlatform: dbRun.pipeline.deploymentPlatform || undefined,
-          steps: (dbRun.pipeline.steps as any[] || []).map(step => ({
-            ...step,
-            name: step.name || '',
-            command: step.command || ''
-          })),
-          triggers: (dbRun.pipeline.triggers as any || { events: [], branches: [] }) as PipelineTriggers,
-          schedule: (dbRun.pipeline.schedule as Record<string, any>) || {},
-          webhookConfig: (dbRun.pipeline.webhookConfig as WebhookConfig) || {},
-          artifactPatterns: (dbRun.pipeline.artifactPatterns as string[]) || [],
-          artifactStorageConfig: (dbRun.pipeline.artifactStorageConfig as Record<string, any>) || {},
-          deploymentConfig: dbRun.pipeline.deploymentConfig as Record<string, JsonValue>
+          steps: (Array.isArray(dbRun.pipeline.steps) ? dbRun.pipeline.steps : []) as PipelineStep[],
+          triggers: (dbRun.pipeline.triggers || { events: [], branches: [] }) as PipelineTriggers,
+          schedule: (dbRun.pipeline.schedule || {}) as Record<string, any>,
+          webhookConfig: (dbRun.pipeline.webhookConfig || { github: undefined }) as WebhookConfig,
+          artifactPatterns: (Array.isArray(dbRun.pipeline.artifactPatterns) ? dbRun.pipeline.artifactPatterns : []) as string[],
+          artifactStorageConfig: (dbRun.pipeline.artifactStorageConfig || {}) as Record<string, any>,
+          deploymentConfig: (dbRun.pipeline.deploymentConfig || {}) as Record<string, JsonValue>,
+          createdById: dbRun.pipeline.createdById || 'system'
         }
       };
       

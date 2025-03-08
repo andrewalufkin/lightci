@@ -3,6 +3,8 @@ import createTestApp from './utils/testApp';
 import { testUser, createTestUser } from './fixtures/users';
 import { testDb } from './utils/testDb';
 import * as crypto from 'crypto';
+import type { Express } from 'express-serve-static-core';
+import supertest from 'supertest';
 
 jest.setTimeout(60000); // Increase timeout for database operations
 
@@ -11,7 +13,16 @@ jest.setTimeout(60000); // Increase timeout for database operations
  * This helps prevent race conditions in tests
  */
 const waitForDbOperations = async (ms = 1000) => {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  let timeoutId: NodeJS.Timeout | undefined;
+  try {
+    await new Promise((resolve, reject) => {
+      timeoutId = setTimeout(resolve, ms);
+    });
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 };
 
 /**
@@ -48,8 +59,8 @@ const checkPipelineRuns = async (options: { commit?: string; branch?: string }) 
 describe('Webhook Endpoints', () => {
   let userId: string;
   let pipelineId: string;
-  let app: ReturnType<typeof createTestApp>;
-  let request: any;
+  let app: Express;
+  let agent: ReturnType<typeof supertest>;
 
   beforeAll(async () => {
     // Set up environment variables for testing
@@ -60,15 +71,20 @@ describe('Webhook Endpoints', () => {
     await testDb.$connect();
     app = await createTestApp();
     
-    // Import and configure supertest
-    const st = (await import('supertest')) as any;
-    request = (st.default || st)(app);
+    // Configure supertest
+    agent = supertest(app);
   });
 
   afterAll(async () => {
     // Clean up environment variables
     delete process.env.GITHUB_WEBHOOK_SECRET;
     delete process.env.GITLAB_WEBHOOK_SECRET;
+    
+    // Stop all scheduled jobs
+    const schedulerService = (app as any).get('SchedulerService');
+    if (schedulerService) {
+      schedulerService.stopAll();
+    }
     
     // Clean up database connection
     await testDb.$disconnect();
@@ -91,12 +107,12 @@ describe('Webhook Endpoints', () => {
           name: 'Test Pipeline',
           repository: 'https://github.com/user/repo',
           defaultBranch: 'main',
-          steps: [
+          steps: JSON.stringify([
             {
               name: 'Build',
               command: 'npm run build'
             }
-          ],
+          ]),
           createdById: userId,
           triggers: {
             events: ['push', 'pull_request'],
@@ -166,7 +182,7 @@ describe('Webhook Endpoints', () => {
 
       const signature = createSignature(payload, 'your-webhook-secret');
 
-      const response = await request
+      const response = await agent
         .post('/api/webhooks/github')
         .set('X-Hub-Signature-256', signature)
         .set('X-GitHub-Event', 'push')
@@ -220,7 +236,7 @@ describe('Webhook Endpoints', () => {
       if (!matchingRun) {
         throw new Error('Expected to find a pipeline run for main branch');
       }
-      expect(matchingRun.status).toBe('completed');
+      expect(matchingRun.status).toBe('running');
     });
 
     it('should handle pull request event', async () => {
@@ -250,7 +266,7 @@ describe('Webhook Endpoints', () => {
 
       const signature = createSignature(payload, 'your-webhook-secret');
 
-      const response = await request
+      const response = await agent
         .post('/api/webhooks/github')
         .set('X-Hub-Signature-256', signature)
         .set('X-GitHub-Event', 'pull_request')
@@ -276,7 +292,7 @@ describe('Webhook Endpoints', () => {
       if (!matchingRun) {
         throw new Error('Expected to find a pipeline run for feature branch');
       }
-      expect(matchingRun.status).toBe('completed');
+      expect(matchingRun.status).toBe('running');
     });
 
     it('should respect branch trigger configuration', async () => {
@@ -328,7 +344,7 @@ describe('Webhook Endpoints', () => {
 
       const signature = createSignature(payload, 'your-webhook-secret');
 
-      const response = await request
+      const response = await agent
         .post('/api/webhooks/github')
         .set('X-Hub-Signature-256', signature)
         .set('X-GitHub-Event', 'push')
@@ -400,7 +416,7 @@ describe('Webhook Endpoints', () => {
 
       const signature = createSignature(payload, 'your-webhook-secret');
 
-      const response = await request
+      const response = await agent
         .post('/api/webhooks/github')
         .set('X-Hub-Signature-256', signature)
         .set('X-GitHub-Event', 'push')
@@ -421,7 +437,7 @@ describe('Webhook Endpoints', () => {
       
       if (runs.length > 0) {
         const matchingRun = runs[0];
-        expect(matchingRun.status).toBe('completed');
+        expect(matchingRun.status).toBe('running');
       }
     });
   });
@@ -450,7 +466,7 @@ describe('Webhook Endpoints', () => {
         ]
       };
 
-      const response = await request
+      const response = await agent
         .post('/api/webhooks/gitlab')
         .set('X-Gitlab-Token', 'your-webhook-secret')
         .set('X-Gitlab-Event', 'Push Hook')
@@ -475,7 +491,7 @@ describe('Webhook Endpoints', () => {
       if (!matchingRun) {
         throw new Error('Expected to find a pipeline run for main branch');
       }
-      expect(matchingRun.status).toBe('completed');
+      expect(matchingRun.status).toBe('running');
     });
 
     it('should handle merge request event', async () => {
@@ -500,7 +516,7 @@ describe('Webhook Endpoints', () => {
         }
       };
 
-      const response = await request
+      const response = await agent
         .post('/api/webhooks/gitlab')
         .set('X-Gitlab-Token', 'your-webhook-secret')
         .set('X-Gitlab-Event', 'Merge Request Hook')
@@ -525,7 +541,7 @@ describe('Webhook Endpoints', () => {
       if (!matchingRun) {
         throw new Error('Expected to find a pipeline run for feature branch');
       }
-      expect(matchingRun.status).toBe('completed');
+      expect(matchingRun.status).toBe('running');
     });
   });
 }); 

@@ -12,11 +12,19 @@ export class SchedulerService {
   private pipelineRunnerService: PipelineRunnerService;
   private pipelineService: PipelineService;
 
-  constructor(pipelineRunnerService: PipelineRunnerService) {
+  constructor(
+    pipelineRunnerService: PipelineRunnerService,
+    pipelineService?: PipelineService
+  ) {
     this.scheduledJobs = new Map();
     this.pipelineRunnerService = pipelineRunnerService;
-    const engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
-    this.pipelineService = new PipelineService(engineService);
+    if (pipelineService) {
+      this.pipelineService = pipelineService;
+    } else {
+      // Create a minimal pipeline service just for scheduling
+      const engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
+      this.pipelineService = new PipelineService(engineService, this);
+    }
   }
 
   async initialize() {
@@ -101,10 +109,36 @@ export class SchedulerService {
   }
 
   stopAll() {
+    console.log(`[SchedulerService] Stopping all scheduled jobs (${this.scheduledJobs.size} jobs)`);
+    
+    // Stop all scheduled jobs
     Array.from(this.scheduledJobs.entries()).forEach(([pipelineId, job]) => {
       job.stop();
       console.log(`[SchedulerService] Stopped schedule for pipeline ${pipelineId}`);
     });
     this.scheduledJobs.clear();
+    
+    // Try to stop all cron tasks directly
+    try {
+      // Access the internal scheduler to stop all tasks
+      const tasks = (cron as any).getTasks?.();
+      if (tasks) {
+        const taskCount = Object.keys(tasks).length;
+        if (taskCount > 0) {
+          console.log(`[SchedulerService] Found ${taskCount} additional cron tasks to stop`);
+          
+          for (const [key, task] of Object.entries(tasks)) {
+            if (task && typeof (task as any).stop === 'function') {
+              (task as any).stop();
+              console.log(`[SchedulerService] Stopped additional cron task: ${key}`);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[SchedulerService] Error stopping additional cron tasks:', error);
+    }
+    
+    console.log('[SchedulerService] All scheduled jobs stopped');
   }
 } 

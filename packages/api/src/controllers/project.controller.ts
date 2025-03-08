@@ -1,7 +1,7 @@
 import express from 'express';
 import type { Request, Response } from 'express-serve-static-core';
 import { ProjectService } from '../services/project.service';
-import { ProjectOwnerType, ProjectVisibility, CreateProjectInput, UpdateProjectInput } from '../models/Project';
+import type { ProjectVisibility } from '../services/project.service';
 
 interface ProjectRequestBody {
   name?: string;
@@ -10,39 +10,15 @@ interface ProjectRequestBody {
   defaultBranch?: string;
   pipelineIds?: string[];
   settings?: Record<string, any>;
+  organizationId?: string;
 }
 
-// Define the shape of our request without extending Express types
-interface ProjectRequest {
+interface ProjectRequest extends Request {
+  user?: {
+    id: string;
+    email: string;
+  };
   body: ProjectRequestBody;
-  user?: {
-    id: string;
-    [key: string]: any;
-  };
-  params: {
-    id?: string;
-    [key: string]: string | undefined;
-  };
-}
-
-interface ProjectParams {
-  id: string;
-}
-
-interface ProjectResponse {
-  id: string;
-  name: string;
-  description?: string;
-  visibility?: ProjectVisibility;
-  owner_id: string;
-  [key: string]: any;
-}
-
-interface RequestWithUser extends Request<ProjectParams, ProjectResponse, ProjectRequestBody> {
-  user?: {
-    id: string;
-    [key: string]: any;
-  };
 }
 
 export class ProjectController {
@@ -58,12 +34,13 @@ export class ProjectController {
         return res.status(400).json({ error: 'Project name is required' });
       }
 
-      const projectData: CreateProjectInput = {
+      const projectData = {
         name: req.body.name,
         description: req.body.description,
-        ownerId: req.user.id,
-        ownerType: 'user',
-        visibility: req.body.visibility,
+        userId: req.user.id,
+        organizationId: req.body.organizationId,
+        visibility: req.body.visibility || 'private',
+        defaultBranch: req.body.defaultBranch,
         pipelineIds: req.body.pipelineIds
       };
 
@@ -72,11 +49,6 @@ export class ProjectController {
     } catch (error: any) {
       if (error.code === 'P2002') {
         return res.status(401).json({ error: 'A project with this name already exists for this owner' });
-      }
-      if (error.message === 'Invalid owner type') {
-        return res.status(400).json({
-          error: 'Invalid owner type. Must be either "user" or "organization"'
-        });
       }
       if (error.message === 'User not found') {
         return res.status(404).json({ error: 'User not found' });
@@ -95,7 +67,10 @@ export class ProjectController {
         return res.status(401).json({ error: 'Unauthorized' });
       }
 
-      const projects = await this.projectService.listProjects({ ownerId: req.user.id, ownerType: 'user' });
+      const projects = await this.projectService.listProjects({ 
+        userId: req.user.id,
+        organizationId: req.query.organizationId as string
+      });
       return res.json(projects);
     } catch (error) {
       return res.status(500).json({ error: 'Failed to list projects' });
@@ -114,7 +89,8 @@ export class ProjectController {
         return res.status(404).json({ error: 'Project not found' });
       }
 
-      if (project.owner_id !== req.user?.id) {
+      const isOwner = await this.projectService.isUserProjectOwner(id, req.user?.id || '');
+      if (!isOwner && project.visibility !== 'public') {
         return res.status(403).json({ error: 'Forbidden' });
       }
 
@@ -136,16 +112,16 @@ export class ProjectController {
         return res.status(404).json({ error: 'Project not found' });
       }
 
-      if (existingProject.owner_id !== req.user?.id) {
+      const isOwner = await this.projectService.isUserProjectOwner(id, req.user?.id || '');
+      if (!isOwner) {
         return res.status(403).json({ error: 'Forbidden' });
       }
 
-      const updateData: UpdateProjectInput = {
+      const updateData = {
         name: req.body.name,
         description: req.body.description,
         visibility: req.body.visibility,
         defaultBranch: req.body.defaultBranch,
-        pipelineIds: req.body.pipelineIds,
         settings: req.body.settings
       };
 
@@ -168,7 +144,8 @@ export class ProjectController {
         return res.status(404).json({ error: 'Project not found' });
       }
 
-      if (existingProject.owner_id !== req.user?.id) {
+      const isOwner = await this.projectService.isUserProjectOwner(id, req.user?.id || '');
+      if (!isOwner) {
         return res.status(403).json({ error: 'Forbidden' });
       }
 

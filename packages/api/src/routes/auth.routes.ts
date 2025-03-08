@@ -4,8 +4,8 @@ import * as bcrypt from 'bcrypt';
 import { testDb } from '../test/utils/testDb';
 import { AuthenticationError, ValidationError, AuthorizationError } from '../utils/errors';
 import { generateJWT, verifyJWT } from '../utils/auth.utils';
-import type { AuthenticatedRequest } from '../middleware/auth';
-import { authenticate } from '../middleware/auth';
+import type { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { authenticate } from '../middleware/auth.middleware';
 
 interface RegisterBody {
   email: string;
@@ -60,9 +60,12 @@ const register: RequestHandler<{}, any, RegisterBody> = async (req, res, next) =
     // Generate token
     const token = generateJWT(user);
 
-    // Remove password hash from response and flatten the response
+    // Remove password hash from response and return the expected structure
     const { passwordHash: _, ...userWithoutPassword } = user;
-    res.status(201).json(userWithoutPassword);
+    res.status(201).json({
+      user: userWithoutPassword,
+      token
+    });
   } catch (error: any) {
     if (error instanceof ValidationError) {
       res.status(400).json({ error: error.message });

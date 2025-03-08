@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { RequestHandler } from 'express-serve-static-core';
 import { validateSchema } from '../middleware/validation';
-import { authenticate } from '../middleware/auth';
+import { authenticate } from '../middleware/auth.middleware';
 import { ProjectController } from '../controllers/project.controller';
 import { ProjectService } from '../services/project.service';
 

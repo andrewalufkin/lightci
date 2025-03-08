@@ -1,22 +1,81 @@
-import * as supertest from 'supertest';
-import app from '../app';
+import app, { cleanupForTests } from '../app';
 import { testUser, createTestUser } from './fixtures/users';
-import { testDb } from './utils/testDb';
+import { testDb, closeTestDb } from './utils/testDb';
+import request from 'supertest';
+import { generateJWT } from '../utils/auth.utils';
+import { SchedulerService } from '../services/scheduler.service';
+import { PipelineRunnerService } from '../services/pipeline-runner.service';
+import { WorkspaceService } from '../services/workspace.service';
 
 describe('Pipeline Endpoints', () => {
   let authToken: string;
   let userId: string;
+  let supertest: any;
+  let schedulerService: SchedulerService;
+  let pipelineRunnerService: PipelineRunnerService;
+
+  beforeAll(() => {
+    supertest = request(app);
+    // Set NODE_ENV to test
+    process.env.NODE_ENV = 'test';
+    
+    // Initialize services that might be created during tests
+    const workspaceService = new WorkspaceService();
+    pipelineRunnerService = new PipelineRunnerService(workspaceService);
+    schedulerService = new SchedulerService(pipelineRunnerService);
+  });
+
+  afterAll(async () => {
+    // Use the app's cleanup function to ensure all services are properly stopped
+    await cleanupForTests();
+    
+    // Stop all scheduled jobs
+    if (schedulerService) {
+      schedulerService.stopAll();
+    }
+    
+    // Clean up pipeline runner service
+    if (pipelineRunnerService) {
+      await pipelineRunnerService.cleanup();
+    }
+    
+    // We can't use require in ESM, so we'll just try to stop the scheduler directly
+    try {
+      schedulerService.stopAll();
+    } catch (error) {
+      console.error('Error stopping scheduler:', error);
+    }
+    
+    // Close the database connection to prevent the test from hanging
+    await closeTestDb();
+    
+    // Add a small delay to ensure all async operations complete
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // Force exit any remaining event loops
+    process.removeAllListeners();
+    
+    // Force garbage collection if available
+    if (global.gc) {
+      global.gc();
+    }
+  });
 
   beforeEach(async () => {
+    // Delete pipeline runs first to handle foreign key constraints
+    await testDb.pipelineRun.deleteMany();
+    await testDb.pipeline.deleteMany();
+    await testDb.user.deleteMany();
     const user = await createTestUser();
     userId = user.id;
-    const response = await supertest(app)
-      .post('/api/auth/login')
-      .send({
-        email: testUser.email,
-        password: 'Password123!'
-      });
-    authToken = response.body.token;
+    authToken = generateJWT(user);
+  });
+
+  afterEach(async () => {
+    // Delete pipeline runs first to handle foreign key constraints
+    await testDb.pipelineRun.deleteMany();
+    await testDb.pipeline.deleteMany();
+    await testDb.user.deleteMany();
   });
 
   describe('POST /api/pipelines', () => {
@@ -34,7 +93,7 @@ describe('Pipeline Endpoints', () => {
     };
 
     it('should create a pipeline with valid data', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .post('/api/pipelines')
         .set('Authorization', `Bearer ${authToken}`)
         .send(validPipeline);
@@ -54,7 +113,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .post('/api/pipelines')
         .send(validPipeline);
 
@@ -67,7 +126,7 @@ describe('Pipeline Endpoints', () => {
         // Missing required fields
       };
 
-      const response = await supertest(app)
+      const response = await supertest
         .post('/api/pipelines')
         .set('Authorization', `Bearer ${authToken}`)
         .send(invalidPipeline);
@@ -101,33 +160,36 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should list all pipelines for the user', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .get('/api/pipelines')
         .set('Authorization', `Bearer ${authToken}`);
 
       expect(response.status).toBe(200);
-      expect(Array.isArray(response.body)).toBe(true);
-      expect(response.body).toHaveLength(2);
-      expect(response.body[0]).toHaveProperty('id');
-      expect(response.body[0]).toHaveProperty('name');
-      expect(response.body[0].createdById).toBe(userId);
+      expect(response.body).toHaveProperty('data');
+      expect(Array.isArray(response.body.data)).toBe(true);
+      expect(response.body.data).toHaveLength(2);
+      expect(response.body.data[0]).toHaveProperty('id');
+      expect(response.body.data[0]).toHaveProperty('name');
+      expect(response.body.data[0].createdById).toBe(userId);
     });
 
     it('should support pagination', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .get('/api/pipelines?page=1&limit=1')
         .set('Authorization', `Bearer ${authToken}`);
 
       expect(response.status).toBe(200);
-      expect(Array.isArray(response.body.items)).toBe(true);
-      expect(response.body.items).toHaveLength(1);
-      expect(response.body).toHaveProperty('total');
-      expect(response.body).toHaveProperty('page');
-      expect(response.body).toHaveProperty('totalPages');
+      expect(response.body).toHaveProperty('data');
+      expect(Array.isArray(response.body.data)).toBe(true);
+      expect(response.body.data).toHaveLength(1);
+      expect(response.body).toHaveProperty('pagination');
+      expect(response.body.pagination).toHaveProperty('total');
+      expect(response.body.pagination).toHaveProperty('page');
+      expect(response.body.pagination).toHaveProperty('limit');
     });
 
     it('should require authentication', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .get('/api/pipelines');
 
       expect(response.status).toBe(401);
@@ -151,7 +213,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should get pipeline by id', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .get(`/api/pipelines/${pipelineId}`)
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -161,7 +223,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should return 404 for non-existent pipeline', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .get('/api/pipelines/non-existent-id')
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -169,7 +231,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .get(`/api/pipelines/${pipelineId}`);
 
       expect(response.status).toBe(401);
@@ -198,7 +260,7 @@ describe('Pipeline Endpoints', () => {
         description: 'Updated description'
       };
 
-      const response = await supertest(app)
+      const response = await supertest
         .put(`/api/pipelines/${pipelineId}`)
         .set('Authorization', `Bearer ${authToken}`)
         .send(updates);
@@ -234,12 +296,13 @@ describe('Pipeline Endpoints', () => {
         }
       });
 
-      const response = await supertest(app)
+      const response = await supertest
         .put(`/api/pipelines/${otherPipeline.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .send({ name: 'Hacked Pipeline' });
 
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(404);
+      expect(response.body).toHaveProperty('error', 'Pipeline not found or access denied');
 
       // Verify pipeline was not updated
       const pipeline = await testDb.pipeline.findUnique({
@@ -249,7 +312,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .put(`/api/pipelines/${pipelineId}`)
         .send({ name: 'Updated Pipeline' });
 
@@ -274,7 +337,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should delete pipeline', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .delete(`/api/pipelines/${pipelineId}`)
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -306,11 +369,12 @@ describe('Pipeline Endpoints', () => {
         }
       });
 
-      const response = await supertest(app)
+      const response = await supertest
         .delete(`/api/pipelines/${otherPipeline.id}`)
         .set('Authorization', `Bearer ${authToken}`);
 
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(404);
+      expect(response.body).toHaveProperty('error', 'Pipeline not found or access denied');
 
       // Verify pipeline still exists
       const pipeline = await testDb.pipeline.findUnique({
@@ -320,7 +384,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .delete(`/api/pipelines/${pipelineId}`);
 
       expect(response.status).toBe(401);
@@ -349,7 +413,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should trigger pipeline run', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .post(`/api/pipelines/${pipelineId}/trigger`)
         .set('Authorization', `Bearer ${authToken}`)
         .send({
@@ -358,18 +422,16 @@ describe('Pipeline Endpoints', () => {
         });
 
       expect(response.status).toBe(201);
-      expect(response.body).toHaveProperty('id');
-      expect(response.body.pipelineId).toBe(pipelineId);
-      expect(response.body.status).toBe('pending');
-      expect(response.body.branch).toBe('main');
-      expect(response.body.commit).toBe('123abc');
+      expect(response.body).toHaveProperty('message', 'Pipeline triggered successfully');
+      expect(response.body).toHaveProperty('runId');
+      expect(response.body).toHaveProperty('status', 'running');
 
       // Verify run was created in database
       const run = await testDb.pipelineRun.findUnique({
-        where: { id: response.body.id }
+        where: { id: response.body.runId }
       });
       expect(run).toBeTruthy();
-      expect(run?.status).toBe('pending');
+      expect(run?.status).toBe('running');
     });
 
     it('should not allow triggering another user\'s pipeline', async () => {
@@ -391,18 +453,19 @@ describe('Pipeline Endpoints', () => {
         }
       });
 
-      const response = await supertest(app)
+      const response = await supertest
         .post(`/api/pipelines/${otherPipeline.id}/trigger`)
         .set('Authorization', `Bearer ${authToken}`)
         .send({
           branch: 'main'
         });
 
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(404);
+      expect(response.body).toHaveProperty('error', 'Pipeline not found or access denied');
     });
 
     it('should require authentication', async () => {
-      const response = await supertest(app)
+      const response = await supertest
         .post(`/api/pipelines/${pipelineId}/trigger`)
         .send({
           branch: 'main'

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { Request as ExpressRequest, Response as ExpressResponse } from 'express-serve-static-core';
 import { PipelineRunController, TypedRequest, ListRequest } from '../controllers/pipeline-run.controller';
-import { authenticate, AuthenticatedRequest } from '../middleware/auth';
+import { authenticate, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { RequestHandler } from 'express-serve-static-core';
 
 const router = Router();

@@ -5,6 +5,54 @@ import { NotFoundError, ValidationError } from '../utils/errors';
 import * as path from 'path';
 import * as fs from 'fs';
 import { Readable } from 'stream';
+import { PrismaClient } from '@prisma/client';
+
+interface AuthenticatedRequest extends Request<any, any, any, any> {
+  user?: {
+    id: string;
+  };
+}
+
+const prisma = new PrismaClient();
+
+function globToRegExp(pattern: string): RegExp {
+  // Process the pattern character by character to build a valid regex
+  let result = '^';
+  
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i];
+    const nextChar = i < pattern.length - 1 ? pattern[i + 1] : '';
+    
+    if (char === '*' && nextChar === '*') {
+      // "**" sequence - match any sequence including directory separators
+      result += '.*';
+      i++; // Skip the next '*'
+      
+      // If followed by a slash, consume it as part of the ** pattern
+      if (i < pattern.length - 1 && pattern[i + 1] === '/') {
+        i++; // Skip the slash
+      }
+    } else if (char === '*') {
+      // "*" - match any sequence except directory separators
+      result += '[^/]*';
+    } else if (char === '?') {
+      // "?" - match any single character except directory separators
+      result += '[^/]';
+    } else if (char === '.') {
+      // Escape dot
+      result += '\\.';
+    } else if ('/+()[]{}^$|\\'.indexOf(char) !== -1) {
+      // Escape special regex characters
+      result += '\\' + char;
+    } else {
+      // Regular character
+      result += char;
+    }
+  }
+  
+  result += '$';
+  return new RegExp(result);
+}
 
 interface ArtifactUploadBody {
   buildId: string;
@@ -111,6 +159,35 @@ export class ArtifactController {
         throw new NotFoundError('Build not found');
       }
 
+      // Get the pipeline to check artifact patterns
+      const pipeline = await this.engineService.getPipeline(build.pipelineId);
+      if (!pipeline) {
+        throw new NotFoundError('Pipeline not found');
+      }
+
+      // Validate against artifact patterns
+      const patterns = pipeline.artifactPatterns || [];
+      console.log('Validating artifact name:', name);
+      console.log('Against patterns:', patterns);
+      if (patterns.length > 0) {
+        const isAllowed = patterns.some(pattern => {
+          try {
+            const regex = globToRegExp(pattern);
+            console.log('Using regex:', regex);
+            const matches = regex.test(name);
+            console.log('Pattern', pattern, 'matches:', matches);
+            return matches;
+          } catch (error) {
+            console.warn(`Invalid artifact pattern: ${pattern}`, error);
+            return false;
+          }
+        });
+
+        if (!isAllowed) {
+          throw new ValidationError(`File name '${name}' does not match any allowed patterns`);
+        }
+      }
+
       // In a real implementation, we would handle file upload and storage
       // For now, we'll just create a mock artifact record
       const artifact = await this.engineService.createArtifact({
@@ -123,7 +200,7 @@ export class ArtifactController {
 
       res.status(201).json(artifact);
     } catch (error: any) {
-      if (error.message.includes('validation')) {
+      if (error instanceof ValidationError) {
         res.status(400).json({ error: error.message });
       } else if (error instanceof NotFoundError) {
         res.status(404).json({ error: error.message });
@@ -134,18 +211,62 @@ export class ArtifactController {
     }
   }
 
-  async deleteArtifact(req: Request<{ id: string }>, res: Response) {
+  async deleteArtifact(req: AuthenticatedRequest, res: Response) {
     try {
       const { id } = req.params;
-      await this.engineService.deleteArtifact(id);
-      res.status(204).send();
-    } catch (error) {
-      if (error instanceof NotFoundError) {
-        res.status(404).json({ error: error.message });
-      } else {
-        console.error('Error deleting artifact:', error);
-        res.status(500).json({ error: 'Failed to delete artifact' });
+      const userId = req.user?.id;
+
+      console.log('[ArtifactController] Delete request for artifact ID:', id);
+      console.log('[ArtifactController] User ID:', userId);
+
+      if (!userId) {
+        console.log('[ArtifactController] No user ID found in request');
+        return res.status(401).json({ error: 'Authentication required' });
       }
+
+      // Get the artifact
+      const artifact = await this.engineService.getArtifact(id);
+      console.log('[ArtifactController] getArtifact result:', artifact);
+      
+      if (!artifact) {
+        console.log('[ArtifactController] Artifact not found');
+        return res.status(404).json({ error: 'Artifact not found' });
+      }
+
+      // Get the pipeline run and its associated pipeline
+      const pipelineRun = await this.engineService.getPipelineRun(artifact.buildId);
+      console.log('[ArtifactController] Found pipeline run:', pipelineRun);
+
+      if (!pipelineRun) {
+        console.log('[ArtifactController] Pipeline run not found');
+        return res.status(404).json({ error: 'Pipeline run not found' });
+      }
+
+      // Get the pipeline to check ownership
+      const pipeline = await this.engineService.getPipeline(pipelineRun.pipelineId);
+      if (!pipeline) {
+        console.log('[ArtifactController] Pipeline not found');
+        return res.status(404).json({ error: 'Pipeline not found' });
+      }
+
+      console.log('[ArtifactController] Pipeline owner ID:', pipeline.createdById);
+      console.log('[ArtifactController] Request user ID:', userId);
+
+      // Check if the user has permission to delete this artifact
+      if (pipeline.createdById !== userId) {
+        console.log('[ArtifactController] Permission denied - user IDs do not match');
+        return res.status(403).json({ error: 'Permission denied' });
+      }
+
+      // Delete the artifact using the engine service
+      console.log('[ArtifactController] Deleting artifact...');
+      await this.engineService.deleteArtifact(id);
+      console.log('[ArtifactController] Artifact deleted successfully');
+      
+      return res.status(204).send();
+    } catch (error) {
+      console.error('[ArtifactController] Error deleting artifact:', error);
+      return res.status(500).json({ error: 'Failed to delete artifact' });
     }
   }
 }

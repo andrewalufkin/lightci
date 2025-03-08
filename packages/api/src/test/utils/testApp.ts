@@ -4,7 +4,7 @@ import type { CorsOptions } from 'cors';
 import type { RequestHandler } from 'express';
 import { pipelineRouter } from '../../routes/pipelines';
 import { pipelineRunRouter } from '../../routes/pipeline-runs';
-import { artifactRouter } from '../../routes/artifacts';
+import { createArtifactRouter } from '../../routes/artifacts';
 import { deploymentRouter } from '../../routes/deployments';
 import { webhookRouter } from '../../routes/webhooks';
 import { projectRouter } from '../../routes/projects';
@@ -16,6 +16,7 @@ import { PipelineRunnerService } from '../../services/pipeline-runner.service';
 import { WorkspaceService } from '../../services/workspace.service';
 import { EngineService } from '../../services/engine.service';
 import { SchedulerService } from '../../services/scheduler.service';
+import { testDb } from './testDb';
 
 /**
  * Creates a test app with configured controllers and services
@@ -36,10 +37,19 @@ export default async function createTestApp() {
 
   // Initialize services in the correct dependency order
   const workspaceService = new WorkspaceService();
-  const pipelineRunner = new PipelineRunnerService(workspaceService);
+  const pipelineRunner = new PipelineRunnerService(workspaceService, testDb);
   const engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3000');
-  const schedulerService = new SchedulerService(pipelineRunner);
-  const pipelineService = new PipelineService(engineService, schedulerService);
+  const pipelineService = new PipelineService(engineService, undefined, testDb); // Pass undefined for schedulerService initially
+  const schedulerService = new SchedulerService(pipelineRunner, pipelineService);
+  
+  // Now that schedulerService is created, set it on pipelineService
+  (pipelineService as any).schedulerService = schedulerService;
+
+  // Store services in the app
+  app.set('EngineService', engineService);
+  app.set('PipelineService', pipelineService);
+  app.set('PipelineRunner', pipelineRunner);
+  app.set('SchedulerService', schedulerService);
 
   // Initialize and store webhook controller
   const webhookController = new WebhookController(pipelineService, pipelineRunner);
@@ -56,7 +66,7 @@ export default async function createTestApp() {
   // Configure routes
   app.use('/api/pipelines', pipelineRouter);
   app.use('/api/pipeline-runs', pipelineRunRouter);
-  app.use('/api/artifacts', artifactRouter);
+  app.use('/api/artifacts', createArtifactRouter(engineService));
   app.use('/api/deployments', deploymentRouter);
   app.use('/api/webhooks', webhookRouter);
   app.use('/api/projects', projectRouter);

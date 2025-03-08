@@ -6,6 +6,9 @@ import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
+// Store the scheduled task so we can stop it later
+let scheduledCleanupTask: cron.ScheduledTask | null = null;
+
 export class ArtifactCleanupService {
   private artifactsBasePath: string;
 
@@ -118,8 +121,14 @@ export class ArtifactCleanupService {
 }
 
 export function scheduleArtifactCleanup(): void {
+  // Stop any existing scheduled task
+  if (scheduledCleanupTask) {
+    scheduledCleanupTask.stop();
+    scheduledCleanupTask = null;
+  }
+  
   // Run at 00:00 UTC every Sunday
-  cron.schedule('0 0 * * 0', async () => {
+  scheduledCleanupTask = cron.schedule('0 0 * * 0', async () => {
     const cleanupService = new ArtifactCleanupService();
     try {
       await cleanupService.cleanup();
@@ -131,4 +140,31 @@ export function scheduleArtifactCleanup(): void {
   });
   
   logger.info('Scheduled weekly artifact cleanup job');
+}
+
+export function stopArtifactCleanup(): void {
+  if (scheduledCleanupTask) {
+    scheduledCleanupTask.stop();
+    scheduledCleanupTask = null;
+    logger.info('Stopped artifact cleanup job');
+  }
+  
+  // Also try to stop all cron tasks directly
+  try {
+    const tasks = (cron as any).getTasks?.();
+    if (tasks) {
+      const taskCount = Object.keys(tasks).length;
+      if (taskCount > 0) {
+        logger.info(`Stopping ${taskCount} additional cron tasks`);
+        
+        for (const [key, task] of Object.entries(tasks)) {
+          if (task && typeof (task as any).stop === 'function') {
+            (task as any).stop();
+          }
+        }
+      }
+    }
+  } catch (error) {
+    logger.error('Error stopping additional cron tasks:', error);
+  }
 } 

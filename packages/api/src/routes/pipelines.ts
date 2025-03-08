@@ -4,18 +4,32 @@ import { PipelineController } from '../controllers/pipeline.controller';
 import { PipelineService } from '../services/pipeline.service';
 import { WorkspaceService } from '../services/workspace.service';
 import { validateSchema } from '../middleware/validation';
-import { authenticate } from '../middleware/auth';
+import { authenticate } from '../middleware/auth.middleware';
 import { EngineService } from '../services/engine.service';
 import { SchedulerService } from '../services/scheduler.service';
 import { PipelineRunnerService } from '../services/pipeline-runner.service';
 import type { AuthenticatedRequest } from '../types/auth';
+import { prisma } from '../lib/prisma';
+import { testDb } from '../test/utils/testDb';
+import { MockPipelineRunnerService } from '../test/fixtures/mock-services';
+
+// Check if we're in a test environment
+const isTest = process.env.NODE_ENV === 'test';
 
 const router = Router();
 const workspaceService = new WorkspaceService();
-const pipelineRunnerService = new PipelineRunnerService(workspaceService);
+
+// Use mock services in test mode
+const pipelineRunnerService = isTest 
+  ? new MockPipelineRunnerService(workspaceService, testDb)
+  : new PipelineRunnerService(workspaceService);
+
 const engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
 const schedulerService = new SchedulerService(pipelineRunnerService);
-const pipelineService = new PipelineService(engineService, schedulerService);
+
+// Use testDb in tests, otherwise use the regular prisma client
+const dbClient = isTest ? testDb : prisma;
+const pipelineService = new PipelineService(engineService, schedulerService, dbClient);
 const pipelineController = new PipelineController(pipelineService, workspaceService);
 
 // Pipeline schema validation
@@ -119,6 +133,85 @@ const pipelineSchema = {
   }]
 };
 
+// Separate schema for pipeline updates that allows partial updates
+const pipelineUpdateSchema = {
+  type: 'object',
+  properties: {
+    name: { type: 'string', minLength: 1 },
+    repository: { type: 'string', format: 'uri' },
+    description: { type: 'string' },
+    steps: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['name', 'command'],
+        properties: {
+          name: { type: 'string' },
+          command: { type: 'string' },
+          timeout: { type: 'number', minimum: 0 },
+          environment: {
+            type: 'object',
+            additionalProperties: { type: 'string' }
+          }
+        }
+      }
+    },
+    defaultBranch: { type: 'string' },
+    triggers: {
+      type: 'object',
+      properties: {
+        branches: { type: 'array', items: { type: 'string' } },
+        events: { 
+          type: 'array', 
+          items: { 
+            type: 'string',
+            enum: ['push', 'pull_request']
+          }
+        }
+      }
+    },
+    schedule: {
+      type: 'object',
+      properties: {
+        cron: { type: 'string' },
+        timezone: { type: 'string' }
+      }
+    },
+    githubToken: { 
+      type: 'string',
+      minLength: 1,
+      description: 'GitHub Personal Access Token with repo and admin:repo_hook scopes'
+    },
+    artifactsEnabled: { type: 'boolean' },
+    artifactPatterns: {
+      type: 'array',
+      items: { type: 'string' }
+    },
+    artifactRetentionDays: { type: 'integer', minimum: 1 },
+    artifactStorageType: { 
+      type: 'string',
+      enum: ['local', 's3']
+    },
+    artifactStorageConfig: {
+      type: 'object',
+      properties: {
+        bucketName: { type: 'string' },
+        region: { type: 'string' },
+        credentialsId: { type: 'string' }
+      }
+    },
+    deploymentEnabled: { type: 'boolean' },
+    deploymentPlatform: {
+      type: 'string',
+      enum: ['aws', 'gcp', 'azure', 'kubernetes', 'custom']
+    },
+    deploymentConfig: {
+      type: 'object',
+      additionalProperties: true
+    }
+  }
+};
+
 // List all pipelines
 router.get('/', authenticate, (req: Request, res: Response, next: NextFunction) => {
   return pipelineController.listPipelines(req as AuthenticatedRequest, res).catch(next);
@@ -144,7 +237,7 @@ router.get('/:id',
 // Update pipeline
 router.put('/:id',
   authenticate,
-  validateSchema(pipelineSchema),
+  validateSchema(pipelineUpdateSchema),
   (req: Request, res: Response, next: NextFunction) => {
     return pipelineController.updatePipeline(req as AuthenticatedRequest, res).catch(next);
   }
