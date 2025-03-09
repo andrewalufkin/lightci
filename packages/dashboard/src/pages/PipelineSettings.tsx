@@ -61,7 +61,7 @@ interface Pipeline {
 interface SortableStepItemProps {
   step: Step;
   index: number;
-  onEdit: (step: Step) => void;
+  onEdit: (step: Step, e?: React.MouseEvent) => void;
   onDelete: (id: string) => void;
 }
 
@@ -81,6 +81,13 @@ const SortableStepItem: React.FC<SortableStepItemProps> = ({ step, index, onEdit
     opacity: isDragging ? 0.5 : 1,
   };
 
+  const handleEdit = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onEdit(step, e);
+    return false;
+  };
+
   return (
     <div
       ref={setNodeRef}
@@ -92,6 +99,7 @@ const SortableStepItem: React.FC<SortableStepItemProps> = ({ step, index, onEdit
           <div className="flex items-center gap-2">
             <button
               className="cursor-grab hover:bg-muted p-1 rounded"
+              type="button"
               {...attributes}
               {...listeners}
             >
@@ -111,13 +119,14 @@ const SortableStepItem: React.FC<SortableStepItemProps> = ({ step, index, onEdit
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => onEdit(step)}
+            type="button"
+            onClick={handleEdit}
           >
             <Pencil className="w-4 h-4" />
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="ghost" size="icon">
+              <Button variant="ghost" size="icon" type="button">
                 <Trash2 className="w-4 h-4 text-destructive" />
               </Button>
             </AlertDialogTrigger>
@@ -151,9 +160,6 @@ const SortableStepItem: React.FC<SortableStepItemProps> = ({ step, index, onEdit
   );
 };
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-const API_KEY = import.meta.env.VITE_API_KEY;
-
 const PipelineSettings: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -183,10 +189,15 @@ const PipelineSettings: React.FC = () => {
   useEffect(() => {
     const fetchPipeline = async () => {
       try {
-        const response = await fetch(`${API_URL}/api/pipelines/${id}`, {
+        const token = localStorage.getItem('auth_token');
+        if (!token) {
+          throw new Error('Authentication required');
+        }
+
+        const response = await fetch(`/api/pipelines/${id}`, {
           headers: {
             'Accept': 'application/json',
-            'x-api-key': API_KEY,
+            'Authorization': `Bearer ${token}`
           },
         });
 
@@ -220,11 +231,16 @@ const PipelineSettings: React.FC = () => {
   const handleDelete = async () => {
     try {
       setDeleteLoading(true);
-      const response = await fetch(`${API_URL}/api/pipelines/${id}`, {
+      const token = localStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('Authentication required');
+      }
+
+      const response = await fetch(`/api/pipelines/${id}`, {
         method: 'DELETE',
         headers: {
           'Accept': 'application/json',
-          'x-api-key': API_KEY,
+          'Authorization': `Bearer ${token}`
         },
       });
 
@@ -245,12 +261,17 @@ const PipelineSettings: React.FC = () => {
     try {
       setIsUpdating(true);
       console.log('Updating pipeline with artifact patterns:', updatedPipeline.artifactPatterns);
-      const response = await fetch(`${API_URL}/api/pipelines/${id}`, {
+      const token = localStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('Authentication required');
+      }
+
+      const response = await fetch(`/api/pipelines/${id}`, {
         method: 'PUT',
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json',
-          'x-api-key': API_KEY,
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(updatedPipeline),
       });
@@ -296,14 +317,24 @@ const PipelineSettings: React.FC = () => {
     setIsStepDialogOpen(true);
   };
 
-  const handleEditStep = (step: Step) => {
-    setEditingStep(step);
-    setStepForm({
-      name: step.name,
-      command: step.command,
-      timeout: step.timeout,
-    });
-    setIsStepDialogOpen(true);
+  const handleEditStep = (step: Step, e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    
+    // Use a timeout to ensure the event has fully propagated before opening the dialog
+    setTimeout(() => {
+      setEditingStep(step);
+      setStepForm({
+        name: step.name,
+        command: step.command,
+        timeout: step.timeout,
+      });
+      setIsStepDialogOpen(true);
+    }, 0);
+    
+    return false; // Explicitly return false to prevent default behavior
   };
 
   const handleDeleteStep = (stepId: string) => {
@@ -430,7 +461,7 @@ const PipelineSettings: React.FC = () => {
         <div className="max-w-4xl mx-auto">
           <div className="flex flex-col items-center justify-center h-64">
             <div className="text-destructive text-lg mb-4">Error: {error}</div>
-            <Button onClick={() => navigate('/')} variant="outline">
+            <Button onClick={() => navigate('/')} variant="outline" type="button">
               Return to Pipelines
             </Button>
           </div>
@@ -445,7 +476,7 @@ const PipelineSettings: React.FC = () => {
         <div className="max-w-4xl mx-auto">
           <div className="flex flex-col items-center justify-center h-64">
             <div className="text-muted-foreground text-lg mb-4">Pipeline not found</div>
-            <Button onClick={() => navigate('/')} variant="outline">
+            <Button onClick={() => navigate('/')} variant="outline" type="button">
               Return to Pipelines
             </Button>
           </div>
@@ -468,6 +499,7 @@ const PipelineSettings: React.FC = () => {
             variant="outline"
             onClick={() => navigate('/')}
             className="flex items-center gap-2"
+            type="button"
           >
             ← Back to Pipelines
           </Button>
@@ -538,6 +570,7 @@ const PipelineSettings: React.FC = () => {
                       <Button
                         variant="ghost"
                         size="icon"
+                        type="button"
                         onClick={() => handleRemoveEnvironmentVariable(key)}
                       >
                         <Trash2 className="w-4 h-4" />
@@ -593,7 +626,8 @@ const PipelineSettings: React.FC = () => {
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  onClick={() => {
+                                  type="button"
+                                  onClick={(e) => {
                                     if (pipeline) {
                                       const newPatterns = [...pipeline.artifactPatterns];
                                       newPatterns.splice(index, 1);
@@ -625,6 +659,7 @@ const PipelineSettings: React.FC = () => {
                           <Button
                             onClick={handleSubmitPatterns}
                             disabled={!draftPatterns.trim() || isUpdating}
+                            type="button"
                           >
                             {isUpdating ? 'Saving...' : 'Save Patterns'}
                           </Button>
@@ -1182,7 +1217,7 @@ const PipelineSettings: React.FC = () => {
                 <CardTitle>Pipeline Steps</CardTitle>
                 <CardDescription>Configure and manage your pipeline steps</CardDescription>
               </div>
-              <Button onClick={handleAddStep} className="flex items-center gap-2">
+              <Button onClick={handleAddStep} className="flex items-center gap-2" type="button">
                 <Plus className="w-4 h-4" /> Add Step
               </Button>
             </CardHeader>
@@ -1222,7 +1257,7 @@ const PipelineSettings: React.FC = () => {
             <CardContent>
               <AlertDialog>
                 <AlertDialogTrigger asChild>
-                  <Button variant="destructive" disabled={deleteLoading}>
+                  <Button variant="destructive" disabled={deleteLoading} type="button">
                     {deleteLoading ? 'Deleting...' : 'Delete Pipeline'}
                   </Button>
                 </AlertDialogTrigger>
@@ -1286,10 +1321,10 @@ const PipelineSettings: React.FC = () => {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setIsStepDialogOpen(false)}>
+              <Button variant="outline" onClick={() => setIsStepDialogOpen(false)} type="button">
                 Cancel
               </Button>
-              <Button onClick={handleSaveStep} disabled={isUpdating}>
+              <Button onClick={handleSaveStep} disabled={isUpdating} type="button">
                 {isUpdating ? 'Saving...' : 'Save'}
               </Button>
             </DialogFooter>

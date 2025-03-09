@@ -13,6 +13,7 @@ import { PipelineStateService } from './pipeline-state.service.js';
 import { PipelineWithSteps, PipelineStep } from '../models/Pipeline.js';
 import { prisma } from '../lib/prisma.js';
 import { Step } from '../models/Step.js';
+import { BillingService } from './billing.service.js';
 
 const execAsync = promisify(exec);
 
@@ -59,11 +60,14 @@ interface PipelineStepResult extends Step {
 export class PipelineRunnerService {
   private activeTimeouts: NodeJS.Timeout[] = [];
   private activeExecutions: Set<string> = new Set();
+  private billingService: BillingService;
 
   constructor(
     private workspaceService: WorkspaceService,
     private prismaClient: PrismaClient = prisma // Default to the global instance
-  ) {}
+  ) {
+    this.billingService = new BillingService(prismaClient);
+  }
 
   private async executeCommand(command: string, workingDir: string, env: Record<string, string> = {}): Promise<{ output: string; error?: string }> {
     try {
@@ -431,6 +435,14 @@ export class PipelineRunnerService {
           where: { id: pipeline.id },
           data: { status: 'completed' }
         });
+
+        // Track build minutes for billing
+        try {
+          await this.billingService.trackBuildMinutes(runId);
+        } catch (error) {
+          console.error(`[PipelineRunner] Error tracking build minutes:`, error);
+          // Don't fail the pipeline run if billing tracking fails
+        }
       })();
 
       // Race between execution and timeout
@@ -453,6 +465,14 @@ export class PipelineRunnerService {
         where: { id: pipeline.id },
         data: { status: 'failed' }
       });
+
+      // Track build minutes for billing even if the pipeline failed
+      try {
+        await this.billingService.trackBuildMinutes(runId);
+      } catch (billingError) {
+        console.error(`[PipelineRunner] Error tracking build minutes for failed pipeline:`, billingError);
+        // Don't fail the pipeline run if billing tracking fails
+      }
 
       throw error;
     } finally {

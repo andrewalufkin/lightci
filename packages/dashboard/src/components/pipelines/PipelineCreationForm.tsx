@@ -405,6 +405,7 @@ const SortableStepItem: React.FC<SortableStepItemProps> = ({
                 variant="ghost" 
                 size="sm"
                 onClick={() => onEdit(step)}
+                type="button"
               >
                 Edit
               </Button>
