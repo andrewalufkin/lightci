@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as cron from 'node-cron';
 import { logger } from '../utils/logger.js';
+import { BillingService } from './billing.service.js';
 
 const prisma = new PrismaClient();
 
@@ -11,9 +12,11 @@ let scheduledCleanupTask: cron.ScheduledTask | null = null;
 
 export class ArtifactCleanupService {
   private artifactsBasePath: string;
+  private billingService: BillingService;
 
   constructor() {
     this.artifactsBasePath = process.env.ARTIFACTS_PATH || path.join(process.cwd(), 'artifacts');
+    this.billingService = new BillingService(prisma);
   }
 
   private async ensureArtifactsDirectory(): Promise<void> {
@@ -33,7 +36,7 @@ export class ArtifactCleanupService {
       // Ensure artifacts directory exists
       await this.ensureArtifactsDirectory();
       
-      // Get all pipeline runs with expired artifacts
+      // Get all pipeline runs with expired artifacts and include their artifacts
       const expiredRuns = await prisma.pipelineRun.findMany({
         where: {
           artifactsExpireAt: {
@@ -41,9 +44,18 @@ export class ArtifactCleanupService {
           },
           artifactsCollected: true
         },
-        select: {
-          id: true,
-          artifactsPath: true
+        include: {
+          artifacts: true,
+          pipeline: {
+            select: {
+              createdById: true,
+              project: {
+                select: {
+                  id: true
+                }
+              }
+            }
+          }
         }
       });
 
@@ -51,11 +63,27 @@ export class ArtifactCleanupService {
 
       for (const run of expiredRuns) {
         try {
+          // Track storage reduction for each artifact before deletion
+          for (const artifact of run.artifacts) {
+            try {
+              await this.billingService.trackArtifactDeletion(artifact.id, artifact.size);
+              logger.info(`Created deletion usage record for artifact ${artifact.id}`);
+            } catch (error) {
+              logger.error(`Failed to track deletion for artifact ${artifact.id}:`, error);
+              // Continue with next artifact even if tracking fails
+            }
+          }
+
           // Delete artifacts from filesystem
           const artifactPath = path.join(this.artifactsBasePath, run.id);
           await fs.rm(artifactPath, { recursive: true, force: true });
 
-          // Update database to reflect deletion
+          // Delete artifacts from database first
+          await prisma.artifact.deleteMany({
+            where: { buildId: run.id }
+          });
+
+          // Update pipeline run to reflect deletion
           await prisma.pipelineRun.update({
             where: { id: run.id },
             data: {

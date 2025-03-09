@@ -556,7 +556,7 @@ export class PipelineRunnerService {
       });
       
       // Create artifacts directory structure
-      const artifactsBaseDir = process.env.ARTIFACTS_ROOT || '/tmp/lightci/artifacts';
+      const artifactsBaseDir = process.env.ARTIFACTS_PATH || '/tmp/lightci/artifacts';
       const runArtifactsDir = path.join(artifactsBaseDir, runId);
       
       // Ensure directory exists and is empty

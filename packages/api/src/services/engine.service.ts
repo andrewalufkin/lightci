@@ -46,7 +46,7 @@ export class EngineService {
   private billingService: BillingService;
 
   constructor(coreEngineUrl: string) {
-    this.artifactsBaseDir = process.env.ARTIFACTS_ROOT || '/tmp/lightci/artifacts';
+    this.artifactsBaseDir = process.env.ARTIFACTS_PATH || '/tmp/lightci/artifacts';
     this.billingService = new BillingService(prisma);
   }
 
@@ -122,43 +122,29 @@ export class EngineService {
 
   async deletePipeline(id: string): Promise<void> {
     try {
-      // Get the pipeline and all its runs with full details
-      const pipeline = await this.getPipeline(id);
-      console.log(`[Engine] Starting deletion of pipeline ${id}. Pipeline exists: ${!!pipeline}`);
-      
-      // Modified query to ensure we get ALL runs for this pipeline
+      // Get all runs for this pipeline
       const runs = await prisma.pipelineRun.findMany({
-        where: { 
-          OR: [
-            { pipelineId: id },
-            { pipeline: { id: id } }
-          ]
-        },
-        select: {
-          id: true,
-          artifactsPath: true,
-          artifactsCollected: true,
-          pipeline: {
-            select: {
-              id: true
-            }
-          }
+        where: { pipelineId: id },
+        include: {
+          artifacts: true // Include artifacts to track storage changes
         }
       });
-      
-      console.log(`[Engine] Found ${runs.length} runs for pipeline ${id}. Run IDs:`, runs.map(r => r.id));
 
-      const workspacesRoot = process.env.WORKSPACE_ROOT || '/tmp/lightci/workspaces';
-      const artifactsRoot = process.env.ARTIFACTS_ROOT || '/tmp/lightci/artifacts';
-
-      // Delete workspace if it exists
-      if (pipeline?.workspaceId) {
-        const workspacePath = path.join(workspacesRoot, pipeline.workspaceId);
-        if (fs.existsSync(workspacePath)) {
-          await fs.promises.rm(workspacePath, { recursive: true, force: true });
-          console.log(`[Engine] Deleted workspace directory for pipeline ${id}`);
+      // Track storage reduction for all artifacts before deletion
+      for (const run of runs) {
+        for (const artifact of run.artifacts) {
+          try {
+            await this.billingService.trackArtifactDeletion(artifact.id, artifact.size);
+            console.log(`[Engine] Created deletion usage record for artifact ${artifact.id}`);
+          } catch (error) {
+            console.error(`[Engine] Error tracking deletion for artifact ${artifact.id}:`, error);
+            // Continue with other artifacts even if tracking fails
+          }
         }
       }
+
+      // Get the artifacts root directory
+      const artifactsRoot = process.env.ARTIFACTS_PATH || '/tmp/lightci/artifacts';
 
       // Delete artifacts for all runs, even if not marked as collected
       for (const run of runs) {
@@ -414,34 +400,97 @@ export class EngineService {
 
   async getArtifact(id: string): Promise<Artifact | null> {
     try {
-      // Since we don't have an artifacts table, reconstruct from filesystem
-      const [runId, encodedPath] = id.split('-');
-      const run = await this.getPipelineRun(runId);
+      console.log(`[EngineService] Getting artifact with ID: ${id}`);
       
+      // First try to get the artifact from the database
+      const dbArtifact = await prisma.artifact.findUnique({
+        where: { id },
+        include: {
+          build: true
+        }
+      });
+      
+      if (!dbArtifact) {
+        console.log(`[EngineService] Artifact not found in database: ${id}`);
+        
+        // Fall back to the old method of reconstructing from filesystem
+        // The ID format is: `${buildId}-${Buffer.from(relativePath).toString('base64')}`
+        // But the encoded path might contain hyphens, so we need to split only on the first hyphen
+        const firstHyphenIndex = id.indexOf('-');
+        if (firstHyphenIndex === -1) {
+          console.log(`[EngineService] Invalid artifact ID format: ${id}`);
+          return null;
+        }
+        
+        const runId = id.substring(0, firstHyphenIndex);
+        const encodedPath = id.substring(firstHyphenIndex + 1);
+        
+        console.log(`[EngineService] Parsed runId: ${runId}, encodedPath: ${encodedPath}`);
+        
+        const run = await this.getPipelineRun(runId);
+        console.log(`[EngineService] Found run:`, run ? 'yes' : 'no', run?.artifactsPath);
+        
+        if (!run?.artifactsPath) {
+          console.log(`[EngineService] Run or artifactsPath not found`);
+          return null;
+        }
+
+        const relativePath = Buffer.from(encodedPath, 'base64').toString();
+        console.log(`[EngineService] Decoded relativePath: ${relativePath}`);
+        
+        const fullPath = path.join(run.artifactsPath, relativePath);
+        console.log(`[EngineService] Full path: ${fullPath}`);
+        
+        if (!fs.existsSync(fullPath)) {
+          console.log(`[EngineService] File does not exist at path: ${fullPath}`);
+          return null;
+        }
+
+        console.log(`[EngineService] File exists at path: ${fullPath}`);
+        const stats = await fsPromises.stat(fullPath);
+        const mimeType = mime.lookup(fullPath);
+
+        return {
+          id,
+          buildId: runId,
+          name: path.basename(fullPath),
+          path: relativePath,
+          size: stats.size,
+          contentType: mimeType || null,
+          createdAt: stats.birthtime,
+          updatedAt: stats.mtime,
+          metadata: {}
+        };
+      }
+      
+      // If we found the artifact in the database, use that information
+      const run = await this.getPipelineRun(dbArtifact.buildId);
       if (!run?.artifactsPath) {
+        console.log(`[EngineService] Run or artifactsPath not found for database artifact`);
         return null;
       }
-
-      const relativePath = Buffer.from(encodedPath, 'base64').toString();
-      const fullPath = path.join(run.artifactsPath, relativePath);
       
+      const fullPath = path.join(run.artifactsPath, dbArtifact.path);
+      console.log(`[EngineService] Full path from database: ${fullPath}`);
+      
+      // Check if the file exists
       if (!fs.existsSync(fullPath)) {
-        return null;
+        console.log(`[EngineService] File does not exist at path from database: ${fullPath}`);
+        // Still return the artifact info even if the file doesn't exist
+      } else {
+        console.log(`[EngineService] File exists at path from database: ${fullPath}`);
       }
-
-      const stats = await fsPromises.stat(fullPath);
-      const mimeType = mime.lookup(fullPath);
-
+      
       return {
-        id,
-        buildId: runId,
-        name: path.basename(fullPath),
-        path: relativePath,
-        size: stats.size,
-        contentType: mimeType || null,
-        createdAt: stats.birthtime,
-        updatedAt: stats.mtime,
-        metadata: {}
+        id: dbArtifact.id,
+        buildId: dbArtifact.buildId,
+        name: dbArtifact.name,
+        path: dbArtifact.path,
+        size: dbArtifact.size,
+        contentType: dbArtifact.contentType || null,
+        createdAt: dbArtifact.createdAt,
+        updatedAt: dbArtifact.updatedAt,
+        metadata: (dbArtifact.metadata as Record<string, string>) || {}
       };
     } catch (error) {
       console.error('[EngineService] Error getting artifact:', error);

@@ -92,7 +92,7 @@ export class ArtifactController {
       }
 
       // Get the artifacts base directory
-      const artifactsBaseDir = process.env.ARTIFACTS_ROOT || '/tmp/lightci/artifacts';
+      const artifactsBaseDir = process.env.ARTIFACTS_PATH || '/tmp/lightci/artifacts';
       console.log(`[ArtifactController] Using artifacts base directory: ${artifactsBaseDir}`);
 
       // Ensure we have the full absolute path

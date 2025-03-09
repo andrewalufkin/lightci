@@ -100,7 +100,7 @@ export class DeploymentService {
   
   constructor() {
     this.engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
-    this.artifacts_base_dir = process.env.ARTIFACTS_ROOT || '/tmp/lightci/artifacts';
+    this.artifacts_base_dir = process.env.ARTIFACTS_PATH || '/tmp/lightci/artifacts';
     console.log('[DeploymentService] Initialized with artifacts base directory:', this.artifacts_base_dir);
   }
   

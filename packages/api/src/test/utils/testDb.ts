@@ -30,14 +30,16 @@ export async function clearTestDb() {
   try {
     // Delete all records from all tables in the correct order
     await prisma.$transaction([
-      prisma.pipelineRun.deleteMany(),
-      prisma.pipeline.deleteMany(),
-      prisma.apiKey.deleteMany(),
-      prisma.user.deleteMany()
+      prisma.artifact.deleteMany(),        // Delete artifacts first since they reference pipeline runs
+      prisma.usageRecord.deleteMany(),     // Delete usage records since they can reference pipeline runs
+      prisma.pipelineRun.deleteMany(),     // Now safe to delete pipeline runs
+      prisma.pipeline.deleteMany(),        // Then delete pipelines
+      prisma.apiKey.deleteMany(),          // Then API keys
+      prisma.user.deleteMany()             // Finally users
     ]);
 
     // Verify all tables are empty
-    const tables = ['pipelineRun', 'pipeline', 'apiKey', 'user'] as const;
+    const tables = ['artifact', 'usageRecord', 'pipelineRun', 'pipeline', 'apiKey', 'user'] as const;
     for (const table of tables) {
       const count = await (prisma[table] as any).count();
       if (count > 0) {
