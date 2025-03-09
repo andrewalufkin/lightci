@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, UsageRecord } from '@prisma/client';
 import { WorkspaceService } from './workspace.service.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -77,9 +77,13 @@ export class PipelineRunnerService {
         exists: await fs.access(workingDir).then(() => true).catch(() => false)
       });
 
+      // Create a clean environment without NODE_OPTIONS
+      const cleanEnv = { ...process.env, ...env };
+      delete cleanEnv.NODE_OPTIONS;
+
       const { stdout, stderr } = await execAsync(command, {
         cwd: workingDir,
-        env: { ...process.env, ...env },
+        env: cleanEnv,
         timeout: 30 * 60 * 1000, // 30 minute timeout
       });
       return { output: stdout + stderr };
@@ -502,6 +506,16 @@ export class PipelineRunnerService {
     workspacePath: string
   ): Promise<void> {
     try {
+      // Get pipeline with project data
+      const pipelineWithProject = await this.prismaClient.pipeline.findUnique({
+        where: { id: pipeline.id },
+        include: { project: true }
+      });
+
+      if (!pipelineWithProject) {
+        throw new Error(`Pipeline ${pipeline.id} not found`);
+      }
+
       // Check if artifacts have already been collected for this run
       const run = await this.prismaClient.pipelineRun.findUnique({
         where: { id: runId }
@@ -611,6 +625,26 @@ export class PipelineRunnerService {
           artifactsCount: artifactsCount,
           artifactsSize: totalSize,
           artifactsExpireAt: expiresAt
+        }
+      });
+
+      // Create a usage record for the total artifact storage
+      const sizeInMB = totalSize / (1024 * 1024); // Convert bytes to MB
+      
+      await this.prismaClient.usageRecord.create({
+        data: {
+          id: crypto.randomUUID(),
+          usage_type: 'artifact_storage',
+          quantity: sizeInMB,
+          storage_change: totalSize,
+          pipeline_run_id: runId,
+          project_id: pipelineWithProject.project?.id,
+          user_id: pipelineWithProject.createdById,
+          metadata: {
+            action: "created",
+            artifact_count: artifactsCount,
+            storage_type: pipelineWithProject.artifactStorageType
+          }
         }
       });
       

@@ -11,6 +11,7 @@ import * as fsPromises from 'fs/promises';
 import * as mime from 'mime-types';
 import { prisma } from '../db.js';
 import { DeploymentService } from './deployment.service.js';
+import { BillingService } from './billing.service.js';
 import { db } from './database.service.js';
 import { PrismaClient, PipelineRun, Prisma } from '@prisma/client';
 
@@ -42,9 +43,11 @@ interface Step {
 
 export class EngineService {
   private artifactsBaseDir: string;
+  private billingService: BillingService;
 
   constructor(coreEngineUrl: string) {
     this.artifactsBaseDir = process.env.ARTIFACTS_ROOT || '/tmp/lightci/artifacts';
+    this.billingService = new BillingService(prisma);
   }
 
   async createPipeline(config: PipelineConfig & { workspaceId: string }): Promise<Pipeline> {
@@ -339,6 +342,14 @@ export class EngineService {
       }
     });
 
+    // Track artifact storage for billing
+    try {
+      await this.billingService.trackArtifactStorage(artifact.id);
+    } catch (error) {
+      console.error('[EngineService] Error tracking artifact storage:', error);
+      // Don't fail artifact creation if billing tracking fails
+    }
+
     // Cast the Prisma artifact to our domain type
     return {
       id: artifact.id,
@@ -448,6 +459,14 @@ export class EngineService {
     const run = await this.getPipelineRun(artifact.buildId);
     if (!run?.artifactsPath) {
       throw new NotFoundError('Artifact path not found');
+    }
+
+    // Track artifact deletion for billing before deleting the artifact
+    try {
+      await this.billingService.trackArtifactDeletion(id, artifact.size);
+    } catch (error) {
+      console.error('[EngineService] Error tracking artifact deletion:', error);
+      // Don't fail artifact deletion if billing tracking fails
     }
 
     // Delete the artifact file from storage

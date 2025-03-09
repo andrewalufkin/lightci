@@ -188,7 +188,7 @@ const templateSteps: Record<string, PipelineStep[]> = {
       id: 'build',
       name: 'Build',
       description: 'Compile and package application',
-      command: 'npm install && npm run build',
+      command: 'npm install ts-node --save-dev && npm install && npm run build',
       type: 'build',
     },
     {
@@ -650,7 +650,7 @@ const PipelineCreationForm = () => {
         )
       }));
     } else {
-      // Add new step
+      // Add new step with guaranteed ID
       const newStep: PipelineStep = {
         ...stepForm,
         id: crypto.randomUUID(),

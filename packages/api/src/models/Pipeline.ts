@@ -5,7 +5,7 @@ export interface PipelineConfig {
   repository: string;
   description?: string;
   defaultBranch?: string;
-  steps: Omit<Step, 'id' | 'status' | 'duration' | 'error'>[];
+  steps: Step[];
   triggers?: {
     events?: ('push' | 'pull_request')[];
     branches?: string[];

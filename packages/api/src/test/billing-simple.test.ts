@@ -6,10 +6,12 @@ import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 const mockPrismaClient: any = {
   user: {
     findUnique: jest.fn(),
-    update: jest.fn()
+    update: jest.fn(),
+    findMany: jest.fn()
   },
-  usage_records: {
-    create: jest.fn()
+  usageRecord: {
+    create: jest.fn(),
+    findMany: jest.fn()
   },
   $executeRaw: jest.fn(),
   $transaction: jest.fn((callback: any) => callback(mockPrismaClient))
@@ -32,6 +34,11 @@ describe('BillingService', () => {
       const userId = 'test-user-id';
       const currentMonth = new Date().toISOString().substring(0, 7);
       
+      // Mock storage records to match expected 5GB
+      mockPrismaClient.usageRecord.findMany.mockResolvedValueOnce([
+        { quantity: 5120 } // 5GB in MB
+      ]);
+
       // Mock the user.findUnique response
       mockPrismaClient.user.findUnique.mockResolvedValueOnce({
         id: userId,
@@ -62,9 +69,18 @@ describe('BillingService', () => {
         }
       });
       
-      // Verify the query was called with the correct parameters
+      // Verify the queries were called with correct parameters
       expect(mockPrismaClient.user.findUnique).toHaveBeenCalledWith({
         where: { id: userId }
+      });
+      expect(mockPrismaClient.usageRecord.findMany).toHaveBeenCalledWith({
+        where: {
+          user_id: userId,
+          usage_type: "artifact_storage"
+        },
+        orderBy: {
+          timestamp: 'desc'
+        }
       });
     });
     
@@ -72,6 +88,9 @@ describe('BillingService', () => {
       // Arrange
       const userId = 'test-user-id';
       
+      // Mock empty storage records for 0GB
+      mockPrismaClient.usageRecord.findMany.mockResolvedValueOnce([]);
+
       // Mock the user.findUnique response
       mockPrismaClient.user.findUnique.mockResolvedValueOnce({
         id: userId,
@@ -97,9 +116,18 @@ describe('BillingService', () => {
         }
       });
       
-      // Verify the query was called with the correct parameters
+      // Verify the queries were called with correct parameters
       expect(mockPrismaClient.user.findUnique).toHaveBeenCalledWith({
         where: { id: userId }
+      });
+      expect(mockPrismaClient.usageRecord.findMany).toHaveBeenCalledWith({
+        where: {
+          user_id: userId,
+          usage_type: "artifact_storage"
+        },
+        orderBy: {
+          timestamp: 'desc'
+        }
       });
     });
   });

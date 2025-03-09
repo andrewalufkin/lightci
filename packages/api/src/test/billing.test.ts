@@ -27,6 +27,7 @@ const mockCreate: any = jest.fn();
 const mockUpdate: any = jest.fn();
 const mockExecuteRaw: any = jest.fn();
 const mockTransaction: any = jest.fn();
+const mockFindMany: any = jest.fn();
 
 // Create a mock PrismaClient with proper typing
 const mockPrismaClient = {
@@ -39,13 +40,15 @@ const mockPrismaClient = {
   },
   user: {
     findUnique: mockFindUnique,
-    update: mockUpdate
+    update: mockUpdate,
+    findMany: mockFindMany
   },
-  usage_records: {
-    create: mockCreate
+  usageRecord: {
+    create: mockCreate,
+    findMany: mockFindMany
   },
   $executeRaw: mockExecuteRaw,
-  $transaction: mockTransaction
+  $transaction: (callback: any) => callback(mockPrismaClient)
 } as unknown as PrismaClient;
 
 // Mock the transaction to execute the callback with the mock client
@@ -276,57 +279,98 @@ describe('BillingService', () => {
     });
     
     it('should use a transaction to ensure atomicity', async () => {
+      // Arrange
+      const transactionSpy = jest.spyOn(mockPrismaClient, '$transaction');
+      
       // Act
       await billingService.trackBuildMinutes(runId);
       
       // Assert: Verify that a transaction was used
-      expect(mockTransaction).toHaveBeenCalled();
+      expect(transactionSpy).toHaveBeenCalled();
+      
+      // Clean up
+      transactionSpy.mockRestore();
     });
   });
   
   describe('getUserBillingUsage', () => {
+    beforeEach(() => {
+      // Reset mocks
+      jest.clearAllMocks();
+      
+      // Default mock implementations for storage records
+      mockFindMany.mockImplementation((args: any) => {
+        if (args.where.usage_type === 'artifact_storage') {
+          return Promise.resolve([
+            { quantity: 512 }, // 512 MB
+            { quantity: 512 }  // Another 512 MB
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+    });
+
     it('should return the current month usage data', async () => {
       // Arrange
       const currentMonth = new Date().toISOString().substring(0, 7);
       
+      // Mock user with usage history
+      mockFindUnique.mockImplementationOnce((args: any) => {
+        if (args.where && args.where.id === userId) {
+          return Promise.resolve({
+            id: userId,
+            usage_history: {
+              [currentMonth]: {
+                build_minutes: 30
+              }
+            }
+          });
+        }
+        return null;
+      });
+
       // Act
       const result = await billingService.getUserBillingUsage(userId);
-      
+
       // Assert
       expect(result).toEqual({
         currentMonth: {
           build_minutes: 30,
-          storage_gb: 0
+          storage_gb: 1 // 1024 MB = 1 GB
         }
       });
-      
-      // Verify the user was queried
+
+      // Verify the queries
       expect(mockFindUnique).toHaveBeenCalledWith({ where: { id: userId } });
+      expect(mockFindMany).toHaveBeenCalledWith({
+        where: {
+          user_id: userId,
+          usage_type: "artifact_storage"
+        },
+        orderBy: {
+          timestamp: 'desc'
+        }
+      });
     });
-    
+
     it('should handle users with no usage history', async () => {
       // Arrange: Mock a user with no usage history
       mockFindUnique.mockImplementationOnce((args: any) => {
         if (args.where && args.where.id === userId) {
           return Promise.resolve({
             id: userId,
-            email: 'test@example.com',
-            username: 'testuser',
-            passwordHash: 'hash',
-            fullName: 'Test User',
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            accountStatus: 'active',
-            accountTier: 'free',
             usage_history: {}
           });
         }
-        return Promise.resolve(null);
+        return null;
       });
-      
+
+      // Mock empty storage records
+      mockFindMany.mockImplementationOnce(() => Promise.resolve([]));
+
       // Act
       const result = await billingService.getUserBillingUsage(userId);
-      
+
       // Assert
       expect(result).toEqual({
         currentMonth: {
@@ -335,13 +379,13 @@ describe('BillingService', () => {
         }
       });
     });
-    
+
     it('should handle database errors gracefully', async () => {
       // Arrange: Mock a database error
       mockFindUnique.mockImplementationOnce(() => {
         throw new Error('Database connection failed');
       });
-      
+
       // Act & Assert
       await expect(billingService.getUserBillingUsage(userId))
         .rejects.toThrow('Error getting user billing usage: Database connection failed');

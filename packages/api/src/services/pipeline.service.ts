@@ -10,6 +10,7 @@ import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { Prisma } from '@prisma/client';
 import { ValidationError } from '../utils/errors.js';
+import { v4 as crypto } from 'uuid';
 
 export class PipelineService {
   private githubService: GitHubService;
@@ -139,6 +140,12 @@ export class PipelineService {
       }
     }
 
+    // Ensure all steps have IDs
+    const stepsWithIds = config.steps.map(step => ({
+      ...step,
+      id: step.id || crypto()
+    }));
+
     // Create the pipeline in the database
     const pipelineData = {
       name: config.name,
@@ -146,7 +153,7 @@ export class PipelineService {
       description: config.description || '',
       defaultBranch: config.defaultBranch || 'main',
       createdById: userId,
-      steps: config.steps || [],
+      steps: stepsWithIds,
       triggers: config.triggers || {},
       webhookConfig,
       status: 'pending',
@@ -261,13 +268,28 @@ export class PipelineService {
   }
 
   async deletePipeline(id: string, userId: string): Promise<void> {
-    // First check if the user owns this pipeline
     const existingPipeline = await this.getPipeline(id, userId);
     if (!existingPipeline) {
       throw new ValidationError('Pipeline not found or access denied');
     }
 
-    // Delete the pipeline from the database
+    // First, delete all associated pipeline runs
+    const runs = await this.prismaClient.pipelineRun.findMany({
+      where: { pipelineId: id },
+      select: { id: true }
+    });
+
+    // Delete each run using the engine service
+    for (const run of runs) {
+      try {
+        await this.engineService.deleteBuild(run.id);
+      } catch (error) {
+        console.error(`[PipelineService] Error deleting run ${run.id}:`, error);
+        // Continue with deletion even if a run deletion fails
+      }
+    }
+
+    // Now delete the pipeline
     await this.prismaClient.pipeline.delete({
       where: { id }
     });
