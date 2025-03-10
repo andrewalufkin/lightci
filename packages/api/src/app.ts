@@ -119,10 +119,13 @@ const errorHandler = (
 
 app.use(errorHandler as ErrorRequestHandler);
 
-// Initialize the app
-initializeApp().catch(error => {
-  console.error('Failed to initialize app:', error);
-  process.exit(1);
-});
+// Initialize the app and export it
+const appPromise = (async () => {
+  await initializeApp().catch(error => {
+    console.error('Failed to initialize app:', error);
+    process.exit(1);
+  });
+  return app;
+})();
 
-export default app;
+export default appPromise;

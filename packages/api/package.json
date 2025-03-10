@@ -8,7 +8,7 @@
 	},
 	"scripts": {
 		"start": "node dist/index.js",
-		"dev": "NODE_OPTIONS='--loader ts-node/esm' nodemon src/server.ts",
+		"dev": "tsx watch src/server.ts",
 		"build": "tsc",
 		"test": "NODE_OPTIONS='--experimental-vm-modules' jest --config jest.config.js --forceExit",
 		"test:force-exit": "FORCE_EXIT_TESTS=true NODE_OPTIONS='--experimental-vm-modules' jest --config jest.config.js --forceExit",
