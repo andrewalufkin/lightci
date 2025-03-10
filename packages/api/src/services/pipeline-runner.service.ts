@@ -1,4 +1,4 @@
-import { PrismaClient, UsageRecord } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 import { WorkspaceService } from './workspace.service.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -14,6 +14,7 @@ import { PipelineWithSteps, PipelineStep } from '../models/Pipeline.js';
 import { prisma } from '../lib/prisma.js';
 import { Step } from '../models/Step.js';
 import { BillingService } from './billing.service.js';
+import { PipelinePreflightService } from './pipeline-preflight.service.js';
 
 const execAsync = promisify(exec);
 
@@ -102,16 +103,35 @@ export class PipelineRunnerService {
     }
   }
 
-  async runPipeline(pipelineId: string, branch: string, commit?: string): Promise<string> {
-    // Get pipeline details
-    const pipelineData = await this.prismaClient.pipeline.findUnique({
-      where: { id: pipelineId }
-    });
+  async runPipeline(pipelineId: string, branch: string, userId: string, commit?: string): Promise<string> {
+    // Perform pre-flight checks first
+    const preflightService = new PipelinePreflightService(this.prismaClient);
+    const preflightResult = await preflightService.performChecks(pipelineId);
+    
+    // If pre-flight checks fail, throw an error
+    if (!preflightResult.canRun) {
+      throw new Error(`Cannot run pipeline: ${preflightResult.errors.join(', ')}`);
+    }
+    
+    // Use the pipeline from pre-flight checks
+    const pipelineData = preflightResult.pipeline;
 
-    if (!pipelineData) {
-      throw new Error('Pipeline not found');
+    // Check if pipeline has an associated user
+    if (!pipelineData.createdById) {
+      throw new Error('Pipeline has no associated user');
     }
 
+    // Perform storage check after verifying user association
+    const storageCheck = await this.billingService.checkStorageLimit(userId);
+    if (!storageCheck.hasEnoughStorage) {
+      throw new Error(`Storage limit exceeded: ${storageCheck.remainingMB} MB remaining, but more is required to run the pipeline.`);
+    }
+    
+    // Log any warnings
+    if (preflightResult.warnings.length > 0) {
+      console.warn(`[PipelineRunner] Pipeline ${pipelineId} has warnings:`, preflightResult.warnings);
+    }
+    
     // Add workspaceId and cast to PipelineWithSteps
     const pipeline = {
       ...pipelineData,
@@ -631,22 +651,28 @@ export class PipelineRunnerService {
       // Create a usage record for the total artifact storage
       const sizeInMB = totalSize / (1024 * 1024); // Convert bytes to MB
       
-      await this.prismaClient.usageRecord.create({
-        data: {
-          id: crypto.randomUUID(),
-          usage_type: 'artifact_storage',
-          quantity: sizeInMB,
-          storage_change: totalSize,
-          pipeline_run_id: runId,
-          project_id: pipelineWithProject.project?.id,
-          user_id: pipelineWithProject.createdById,
-          metadata: {
-            action: "created",
-            artifact_count: artifactsCount,
-            storage_type: pipelineWithProject.artifactStorageType
-          }
-        }
-      });
+      // Create a usage record directly
+      await this.prismaClient.$executeRaw`
+        INSERT INTO usage_records (
+          id, 
+          usage_type, 
+          quantity, 
+          storage_change, 
+          pipeline_run_id, 
+          project_id, 
+          user_id, 
+          metadata
+        ) VALUES (
+          ${crypto.randomUUID()}, 
+          'artifact_storage', 
+          ${sizeInMB}, 
+          ${totalSize}, 
+          ${runId}, 
+          ${pipelineWithProject.project?.id || null}, 
+          ${pipelineWithProject.createdById || null}, 
+          ${'{"action":"created","artifact_count":' + artifactsCount + ',"storage_type":"' + pipelineWithProject.artifactStorageType + '"}'}
+        )
+      `;
       
       console.log(`[PipelineRunner] Successfully collected ${artifactsCount} artifacts (${totalSize} bytes) for run ${runId}`);
       

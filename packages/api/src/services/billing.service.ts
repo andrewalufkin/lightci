@@ -26,6 +26,58 @@ export class BillingService {
   ) {}
 
   /**
+   * Check if a user has enough storage left based on their account tier
+   * @param userId The ID of the user to check
+   * @returns An object containing whether the user has enough storage and their current usage
+   */
+  async checkStorageLimit(userId: string): Promise<{ hasEnoughStorage: boolean; currentUsageMB: number; limitMB: number; remainingMB: number }> {
+    try {
+      // Get the user with their account tier using raw query to access all fields
+      const users = await this.prismaClient.$queryRaw`
+        SELECT account_tier, artifact_storage_used 
+        FROM users 
+        WHERE id = ${userId}
+      ` as Array<{ account_tier: string; artifact_storage_used: number }>;
+
+      if (!users || users.length === 0) {
+        throw new Error(`User with ID ${userId} not found`);
+      }
+
+      const user = users[0];
+
+      // Define storage limits in MB for each tier
+      const storageLimits: Record<string, number> = {
+        'free': 500,             // 500 MB
+        'basic': 5 * 1024,       // 5 GB in MB
+        'professional': 25 * 1024, // 25 GB in MB
+        'enterprise': 100 * 1024  // 100 GB in MB
+      };
+
+      // Get the storage limit for the user's tier (default to free tier limit if tier not found)
+      const limitMB = storageLimits[user.account_tier] || storageLimits.free;
+      
+      // Convert storage used from bytes to MB
+      const currentUsageMB = (user.artifact_storage_used || 0) / (1024 * 1024);
+      
+      // Calculate remaining storage
+      const remainingMB = Math.max(0, limitMB - currentUsageMB);
+      
+      // Check if user has enough storage left
+      const hasEnoughStorage = currentUsageMB < limitMB;
+
+      return {
+        hasEnoughStorage,
+        currentUsageMB,
+        limitMB,
+        remainingMB
+      };
+    } catch (error) {
+      console.error('[BillingService] Error checking storage limit:', error);
+      throw new Error(`Error checking storage limit: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
    * Track build minutes for a completed pipeline run
    * @param runId The ID of the completed pipeline run
    * @param userId The ID of the user who owns the pipeline
@@ -178,18 +230,22 @@ export class BillingService {
       const currentMonth = new Date().toISOString().substring(0, 7);
 
       // Calculate current artifact storage from usage records
-      const storageRecords = await this.prismaClient.usageRecord.findMany({
-        where: {
-          user_id: userId,
-          usage_type: "artifact_storage"
-        },
-        orderBy: {
-          timestamp: 'desc'
-        }
-      });
+      const storageRecords = await this.prismaClient.$queryRaw`
+        SELECT * FROM usage_records 
+        WHERE user_id = ${userId} 
+        AND usage_type = 'artifact_storage'
+        ORDER BY timestamp ASC
+      ` as Array<{ quantity: string | number }>;
 
       // Sum up all storage changes (additions and deletions)
-      const currentStorageMB = storageRecords.reduce((total, record) => total + record.quantity, 0);
+      let currentStorageMB = 0;
+      
+      for (const record of storageRecords) {
+        const quantity = typeof record.quantity === 'string' 
+          ? parseFloat(record.quantity) 
+          : record.quantity;
+        currentStorageMB += quantity;
+      }
       const currentStorageGB = Math.max(0, currentStorageMB / 1024); // Convert MB to GB, ensure non-negative
 
       // Parse the usage history

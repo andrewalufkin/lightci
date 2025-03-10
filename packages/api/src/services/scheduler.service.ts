@@ -46,7 +46,7 @@ export class SchedulerService {
       for (const pipeline of pipelines) {
         const modelPipeline = await this.pipelineService.getPipeline(pipeline.id, 'system');
         if (modelPipeline) {
-          await this.schedulePipeline(modelPipeline);
+          await this.schedulePipeline(modelPipeline, modelPipeline.createdById);
         }
       }
 
@@ -56,7 +56,7 @@ export class SchedulerService {
     }
   }
 
-  async schedulePipeline(pipeline: Pipeline) {
+  async schedulePipeline(pipeline: Pipeline, userId: string) {
     try {
       // Remove existing schedule if any
       this.unschedulePipeline(pipeline.id);
@@ -78,7 +78,7 @@ export class SchedulerService {
       const job = cron.schedule(schedule.cron, async () => {
         try {
           console.log(`[SchedulerService] Triggering scheduled run for pipeline ${pipeline.id}`);
-          await this.pipelineRunnerService.runPipeline(pipeline.id, pipeline.defaultBranch);
+          await this.pipelineRunnerService.runPipeline(pipeline.id, pipeline.defaultBranch, userId);
         } catch (error) {
           console.error(`[SchedulerService] Error running scheduled pipeline ${pipeline.id}:`, error);
         }
@@ -105,7 +105,7 @@ export class SchedulerService {
   }
 
   async updatePipelineSchedule(pipeline: Pipeline) {
-    await this.schedulePipeline(pipeline);
+    await this.schedulePipeline(pipeline, pipeline.createdById);
   }
 
   stopAll() {
@@ -141,4 +141,4 @@ export class SchedulerService {
     
     console.log('[SchedulerService] All scheduled jobs stopped');
   }
-} 
+}

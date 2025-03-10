@@ -9,7 +9,7 @@ import { SchedulerService } from './scheduler.service.js';
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { Prisma } from '@prisma/client';
-import { ValidationError } from '../utils/errors.js';
+import { ValidationError, NotFoundError } from '../utils/errors.js';
 import { v4 as crypto } from 'uuid';
 
 export class PipelineService {
@@ -57,21 +57,18 @@ export class PipelineService {
   }
 
   async getPipeline(id: string, userId: string): Promise<Pipeline | null> {
-    try {
-      const pipeline = await this.prismaClient.pipeline.findFirst({
-        where: {
-          id,
-          createdById: userId
-        }
-      });
-      
-      if (!pipeline) return null;
-      
-      return this.transformToModelPipeline(pipeline);
-    } catch (error) {
-      console.error('Error getting pipeline:', error);
+    const pipeline = await this.prismaClient.pipeline.findFirst({
+      where: {
+        id,
+        createdById: userId
+      }
+    });
+
+    if (!pipeline) {
       return null;
     }
+
+    return this.transformToModelPipeline(pipeline);
   }
 
   async listPipelines(options: { 
@@ -212,7 +209,7 @@ export class PipelineService {
     // First check if the user owns this pipeline
     const existingPipeline = await this.getPipeline(id, userId);
     if (!existingPipeline) {
-      throw new ValidationError('Pipeline not found or access denied');
+      throw new NotFoundError('Pipeline not found or access denied');
     }
 
     // Validate artifact storage configuration
@@ -245,66 +242,33 @@ export class PipelineService {
     if (config.deploymentPlatform !== undefined) updateData.deploymentPlatform = config.deploymentPlatform;
     if (config.deploymentConfig !== undefined) updateData.deploymentConfig = JSON.stringify(config.deploymentConfig);
 
-    // Update the pipeline in the database
-    const updated = await this.prismaClient.pipeline.update({
-      where: { id },
-      data: updateData
-    });
+    try {
+      // Update the pipeline in the database
+      const updated = await this.prismaClient.pipeline.update({
+        where: { id },
+        data: updateData
+      });
 
-    // Transform to model pipeline
-    const modelPipeline = this.transformToModelPipeline(updated);
-
-    // Update schedule if scheduler service is available
-    if (this.schedulerService && config.schedule) {
-      try {
-        await this.schedulerService.updatePipelineSchedule(modelPipeline);
-      } catch (error) {
-        console.error(`[PipelineService] Error updating schedule:`, error);
-        // Don't fail pipeline update if schedule update fails
-      }
+      return this.transformToModelPipeline(updated);
+    } catch (error) {
+      console.error(`[PipelineService] Error updating pipeline:`, error);
+      throw new Error('Failed to update pipeline');
     }
-
-    return modelPipeline;
   }
 
   async deletePipeline(id: string, userId: string): Promise<void> {
     const existingPipeline = await this.getPipeline(id, userId);
     if (!existingPipeline) {
-      throw new ValidationError('Pipeline not found or access denied');
+      throw new NotFoundError('Pipeline not found or access denied');
     }
 
-    // First, delete all associated pipeline runs
-    const runs = await this.prismaClient.pipelineRun.findMany({
-      where: { pipelineId: id },
-      select: { id: true }
-    });
-
-    // Delete each run using the engine service
-    for (const run of runs) {
-      try {
-        await this.engineService.deleteBuild(run.id);
-      } catch (error) {
-        console.error(`[PipelineService] Error deleting run ${run.id}:`, error);
-        // Continue with deletion even if a run deletion fails
-      }
-    }
-
-    // Now delete the pipeline
-    await this.prismaClient.pipeline.delete({
-      where: { id }
-    });
-
-    // Clean up schedule if scheduler service is available
-    if (this.schedulerService) {
-      try {
-        await this.schedulerService.updatePipelineSchedule({
-          ...existingPipeline,
-          schedule: {}
-        });
-      } catch (error) {
-        console.error(`[PipelineService] Error removing schedule:`, error);
-        // Don't fail pipeline deletion if schedule removal fails
-      }
+    try {
+      await this.prismaClient.pipeline.delete({
+        where: { id }
+      });
+    } catch (error) {
+      console.error(`[PipelineService] Error deleting pipeline:`, error);
+      throw new Error('Failed to delete pipeline');
     }
   }
 
@@ -435,7 +399,7 @@ export class PipelineService {
             pipelineId: config.pipelineId,
             branch: config.branch,
             commit: config.commit,
-            status: config.status || 'pending',
+            status: 'running', // Always set to running initially
             startedAt: new Date(),
             stepResults: [],
             logs: []

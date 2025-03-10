@@ -22,24 +22,26 @@ type MockPipelineRunResult = {
 };
 
 // Create proper Jest mocks for Prisma methods
-const mockFindUnique: any = jest.fn();
+const mockUserFindUnique: any = jest.fn();
+const mockPipelineRunFindUnique: any = jest.fn();
 const mockCreate: any = jest.fn();
 const mockUpdate: any = jest.fn();
 const mockExecuteRaw: any = jest.fn();
 const mockTransaction: any = jest.fn();
 const mockFindMany: any = jest.fn();
+const mockQueryRaw: any = jest.fn();
 
 // Create a mock PrismaClient with proper typing
 const mockPrismaClient = {
   pipelineRun: {
-    findUnique: mockFindUnique,
+    findUnique: mockPipelineRunFindUnique,
     create: mockCreate
   },
   pipeline: {
     create: jest.fn()
   },
   user: {
-    findUnique: mockFindUnique,
+    findUnique: mockUserFindUnique,
     update: mockUpdate,
     findMany: mockFindMany
   },
@@ -48,6 +50,7 @@ const mockPrismaClient = {
     findMany: mockFindMany
   },
   $executeRaw: mockExecuteRaw,
+  $queryRaw: mockQueryRaw,
   $transaction: (callback: any) => callback(mockPrismaClient)
 } as unknown as PrismaClient;
 
@@ -62,10 +65,10 @@ describe('BillingService', () => {
   
   // Helper to create a pipeline run with specific duration
   const createPipelineRunWithDuration = async (durationMinutes: number, isCompleted = true) => {
-    const startTime = new Date();
-    startTime.setMinutes(startTime.getMinutes() - durationMinutes);
+    const now = new Date();
+    const startTime = new Date(now.getTime() - durationMinutes * 60 * 1000);
     
-    const completedAt = isCompleted ? new Date() : null;
+    const completedAt = isCompleted ? now : null;
     
     return mockPipelineRun(pipelineId, {
       status: isCompleted ? 'completed' : 'running',
@@ -91,7 +94,7 @@ describe('BillingService', () => {
     runId = standardRun.id;
     
     // Mock the pipeline run lookup
-    mockFindUnique.mockImplementation((args: any) => {
+    mockPipelineRunFindUnique.mockImplementation((args: any) => {
       if (args.where && args.where.id === runId) {
         return Promise.resolve({
           ...standardRun,
@@ -158,12 +161,49 @@ describe('BillingService', () => {
   });
   
   describe('trackBuildMinutes', () => {
+    let runId: string;
+    
+    beforeEach(() => {
+      // Reset mocks
+      jest.clearAllMocks();
+      
+      // Set up default test data
+      runId = 'test-run-id';
+      
+      // Mock the pipeline run lookup
+      mockPipelineRunFindUnique.mockImplementation((args: any) => {
+        if (args.where && args.where.id === runId) {
+          return Promise.resolve({
+            id: runId,
+            startedAt: new Date('2023-01-01T10:00:00Z'),
+            completedAt: new Date('2023-01-01T11:00:00Z'), // 1 hour = 60 minutes
+            pipeline: {
+              createdById: userId,
+              projectId: 'test-project-id'
+            }
+          });
+        }
+        return Promise.resolve(null);
+      });
+      
+      // Mock the user lookup for updateUserUsageHistory
+      mockUserFindUnique.mockImplementation((args: any) => {
+        if (args.where && args.where.id === userId) {
+          return Promise.resolve({
+            id: userId,
+            usage_history: {}
+          });
+        }
+        return Promise.resolve(null);
+      });
+    });
+    
     it('should track build minutes and create usage record for completed runs', async () => {
       // Act
       const result = await billingService.trackBuildMinutes(runId);
       
       // Assert: Check that the correct queries were performed
-      expect(mockFindUnique).toHaveBeenCalledWith({ 
+      expect(mockPipelineRunFindUnique).toHaveBeenCalledWith({ 
         where: { id: runId },
         include: { pipeline: { select: { createdById: true, projectId: true } } }
       });
@@ -172,7 +212,7 @@ describe('BillingService', () => {
       expect(mockCreate).toHaveBeenCalled();
       
       // Check that user was found and updated
-      expect(mockFindUnique).toHaveBeenCalledWith({ 
+      expect(mockUserFindUnique).toHaveBeenCalledWith({ 
         where: { id: userId }
       });
       
@@ -187,7 +227,7 @@ describe('BillingService', () => {
       const runningRun = await createPipelineRunWithDuration(runningDuration, false);
       
       // Mock the pipeline run lookup for this test
-      mockFindUnique.mockImplementationOnce((args: any) => {
+      mockPipelineRunFindUnique.mockImplementationOnce((args: any) => {
         if (args.where && args.where.id === runningRun.id) {
           return Promise.resolve({
             ...runningRun,
@@ -201,7 +241,7 @@ describe('BillingService', () => {
       const result = await billingService.trackBuildMinutes(runningRun.id);
       
       // Assert: Verify that the correct queries were executed
-      expect(mockFindUnique).toHaveBeenCalledWith({ 
+      expect(mockPipelineRunFindUnique).toHaveBeenCalledWith({ 
         where: { id: runningRun.id },
         include: { pipeline: { select: { createdById: true, projectId: true } } }
       });
@@ -216,7 +256,7 @@ describe('BillingService', () => {
       const shortRun = await createPipelineRunWithDuration(shortDuration);
       
       // Mock the pipeline run lookup for this test
-      mockFindUnique.mockImplementationOnce((args: any) => {
+      mockPipelineRunFindUnique.mockImplementationOnce((args: any) => {
         if (args.where && args.where.id === shortRun.id) {
           return Promise.resolve({
             ...shortRun,
@@ -240,7 +280,7 @@ describe('BillingService', () => {
       const longRun = await createPipelineRunWithDuration(longDuration);
       
       // Mock the pipeline run lookup for this test
-      mockFindUnique.mockImplementationOnce((args: any) => {
+      mockPipelineRunFindUnique.mockImplementationOnce((args: any) => {
         if (args.where && args.where.id === longRun.id) {
           return Promise.resolve({
             ...longRun,
@@ -260,7 +300,7 @@ describe('BillingService', () => {
     
     it('should handle errors when pipeline run not found', async () => {
       // Arrange: Mock a not found response
-      mockFindUnique.mockImplementationOnce(() => Promise.resolve(null));
+      mockPipelineRunFindUnique.mockImplementationOnce(() => Promise.resolve(null));
       
       // Act & Assert: Expect the function to throw an error
       await expect(billingService.trackBuildMinutes('non-existent-id'))
@@ -269,7 +309,7 @@ describe('BillingService', () => {
     
     it('should handle database errors gracefully', async () => {
       // Arrange: Mock a database error
-      mockFindUnique.mockImplementationOnce(() => {
+      mockPipelineRunFindUnique.mockImplementationOnce(() => {
         throw new Error('Database connection failed');
       });
       
@@ -294,28 +334,12 @@ describe('BillingService', () => {
   });
   
   describe('getUserBillingUsage', () => {
-    beforeEach(() => {
-      // Reset mocks
-      jest.clearAllMocks();
-      
-      // Default mock implementations for storage records
-      mockFindMany.mockImplementation((args: any) => {
-        if (args.where.usage_type === 'artifact_storage') {
-          return Promise.resolve([
-            { quantity: 512 }, // 512 MB
-            { quantity: 512 }  // Another 512 MB
-          ]);
-        }
-        return Promise.resolve([]);
-      });
-    });
-
     it('should return the current month usage data', async () => {
       // Arrange
       const currentMonth = new Date().toISOString().substring(0, 7);
       
-      // Mock user with usage history
-      mockFindUnique.mockImplementationOnce((args: any) => {
+      // Mock the user query
+      mockUserFindUnique.mockImplementationOnce((args: any) => {
         if (args.where && args.where.id === userId) {
           return Promise.resolve({
             id: userId,
@@ -329,6 +353,11 @@ describe('BillingService', () => {
         return null;
       });
 
+      // Mock the storage records query using $queryRaw
+      mockQueryRaw.mockResolvedValueOnce([
+        { quantity: 1024 } // 1024 MB = 1 GB
+      ]);
+
       // Act
       const result = await billingService.getUserBillingUsage(userId);
 
@@ -341,21 +370,13 @@ describe('BillingService', () => {
       });
 
       // Verify the queries
-      expect(mockFindUnique).toHaveBeenCalledWith({ where: { id: userId } });
-      expect(mockFindMany).toHaveBeenCalledWith({
-        where: {
-          user_id: userId,
-          usage_type: "artifact_storage"
-        },
-        orderBy: {
-          timestamp: 'desc'
-        }
-      });
+      expect(mockUserFindUnique).toHaveBeenCalledWith({ where: { id: userId } });
+      expect(mockQueryRaw).toHaveBeenCalled();
     });
 
     it('should handle users with no usage history', async () => {
       // Arrange: Mock a user with no usage history
-      mockFindUnique.mockImplementationOnce((args: any) => {
+      mockUserFindUnique.mockImplementationOnce((args: any) => {
         if (args.where && args.where.id === userId) {
           return Promise.resolve({
             id: userId,
@@ -365,8 +386,8 @@ describe('BillingService', () => {
         return null;
       });
 
-      // Mock empty storage records
-      mockFindMany.mockImplementationOnce(() => Promise.resolve([]));
+      // Mock empty storage records with $queryRaw
+      mockQueryRaw.mockResolvedValueOnce([]);
 
       // Act
       const result = await billingService.getUserBillingUsage(userId);
@@ -382,7 +403,7 @@ describe('BillingService', () => {
 
     it('should handle database errors gracefully', async () => {
       // Arrange: Mock a database error
-      mockFindUnique.mockImplementationOnce(() => {
+      mockUserFindUnique.mockImplementationOnce(() => {
         throw new Error('Database connection failed');
       });
 

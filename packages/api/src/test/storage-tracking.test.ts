@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { BillingService } from '../services/billing.service';
 import { EngineService } from '../services/engine.service';
 import { ArtifactCleanupService } from '../services/artifact-cleanup.service';
+import { UserService } from '../services/user.service';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
@@ -21,10 +22,17 @@ interface UsageRecord {
   timestamp: Date;
 }
 
+interface UserStorageInfo {
+  id: string;
+  artifact_storage_used: number;
+  usage_history: any;
+}
+
 describe('Storage Tracking Lifecycle', () => {
   let billingService: BillingService;
   let engineService: EngineService;
   let cleanupService: ArtifactCleanupService;
+  let userService: UserService;
   let testUserId: string;
   let testPipelineId: string;
   let testRunId: string;
@@ -39,6 +47,7 @@ describe('Storage Tracking Lifecycle', () => {
     billingService = new BillingService(testDb);
     engineService = new EngineService('test-url');
     cleanupService = new ArtifactCleanupService();
+    userService = new UserService();
   });
 
   beforeEach(async () => {
@@ -287,6 +296,63 @@ describe('Storage Tracking Lifecycle', () => {
         where: { id: artifact.id }
       });
       expect(artifactExists).toBeNull();
+    });
+  });
+
+  describe('User Storage Calculation', () => {
+    it('should correctly calculate user storage from usage records', async () => {
+      // Create multiple artifacts with different sizes
+      const artifactSizes = [1024, 2048, 4096]; // 1KB, 2KB, 4KB
+      const totalSize = artifactSizes.reduce((sum, size) => sum + size, 0); // 7KB
+      
+      // Create artifacts
+      const artifacts = await Promise.all(
+        artifactSizes.map((size, index) => 
+          engineService.createArtifact({
+            buildId: testRunId,
+            name: `test${index}.txt`,
+            size: size,
+            contentType: 'text/plain'
+          })
+        )
+      );
+      
+      // Create the actual files
+      const run = await testDb.pipelineRun.findUnique({ where: { id: testRunId } });
+      if (!run?.artifactsPath) throw new Error('Run artifacts path not found');
+      
+      for (let i = 0; i < artifacts.length; i++) {
+        const artifactPath = path.join(run.artifactsPath, artifacts[i].path);
+        await fs.writeFile(artifactPath, Buffer.alloc(artifactSizes[i]));
+      }
+      
+      // Delete one artifact to test negative usage records
+      await engineService.deleteArtifact(artifacts[0].id);
+      
+      // Calculate the expected storage (total minus deleted artifact)
+      const expectedStorageMB = (totalSize - artifactSizes[0]) / (1024 * 1024);
+      
+      // Call the user service to calculate storage
+      const storageInfo = await userService.calculateArtifactStorageUsage(testUserId);
+      
+      // Verify the calculated storage
+      expect(storageInfo.currentStorageMB).toBeCloseTo(expectedStorageMB);
+      expect(storageInfo.artifactCount).toBe(2); // Should have 2 artifacts left
+      
+      // Verify the user record was updated using raw SQL query
+      const [updatedUser] = await testDb.$queryRaw<UserStorageInfo[]>`
+        SELECT id, artifact_storage_used, usage_history 
+        FROM users 
+        WHERE id = ${testUserId}
+      `;
+      
+      // Check artifact_storage_used field (should be in bytes)
+      expect(updatedUser.artifact_storage_used).toBe(Math.round(expectedStorageMB * 1024 * 1024));
+      
+      // Check usage_history JSON field
+      const usageHistory = updatedUser.usage_history;
+      expect(usageHistory.current_artifact_storage_mb).toBeCloseTo(expectedStorageMB);
+      expect(usageHistory.last_storage_calculation).toBeDefined();
     });
   });
 }); 

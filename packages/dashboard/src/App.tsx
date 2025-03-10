@@ -10,6 +10,7 @@ import { AuthProvider } from '@/lib/auth.context';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { Toaster } from 'sonner';
 import { useAuth } from '@/lib/auth.context';
+import UserDashboard from './pages/UserDashboard';
 
 function Header() {
   const { user, logout } = useAuth();
@@ -112,6 +113,11 @@ function App() {
                   </ProtectedRoute>
                 }
               />
+              <Route path="/user/dashboard" element={
+                <ProtectedRoute>
+                  <UserDashboard />
+                </ProtectedRoute>
+              } />
             </Routes>
           </main>
         </div>

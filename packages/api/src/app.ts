@@ -9,6 +9,7 @@ import { deploymentRouter } from './routes/deployments.js';
 import { webhookRouter } from './routes/webhooks.js';
 import { projectRouter } from './routes/projects.js';
 import authRouter from './routes/auth.routes.js';
+import userRouter from './routes/user.js';
 import { AuthenticationError, NotFoundError, ValidationError } from './utils/errors.js';
 import { scheduleArtifactCleanup, stopArtifactCleanup } from './services/artifact-cleanup.service.js';
 import { PipelineStateService } from './services/pipeline-state.service.js';
@@ -59,6 +60,7 @@ const initializeApp = async () => {
   app.use('/api/webhooks', webhookRouter);
   app.use('/api/projects', projectRouter);
   app.use('/api/auth', authRouter);
+  app.use('/api/user', userRouter);
 };
 
 // Handle graceful shutdown

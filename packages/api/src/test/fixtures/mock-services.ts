@@ -1,6 +1,7 @@
 import { PipelineRunnerService } from '../../services/pipeline-runner.service.js';
 import { WorkspaceService } from '../../services/workspace.service.js';
 import { PrismaClient } from '@prisma/client';
+import { NotFoundError } from '../../utils/errors.js';
 
 /**
  * Mock PipelineRunnerService for tests that doesn't actually run pipelines asynchronously
@@ -13,14 +14,17 @@ export class MockPipelineRunnerService extends PipelineRunnerService {
     this.prisma = prisma;
   }
 
-  async runPipeline(pipelineId: string, branch: string, commit?: string): Promise<string> {
-    // Get pipeline data
-    const pipelineData = await this.prisma.pipeline.findUnique({
-      where: { id: pipelineId }
+  async runPipeline(pipelineId: string, branch: string, userId: string, commit?: string): Promise<string> {
+    // Get pipeline data with ownership check
+    const pipelineData = await this.prisma.pipeline.findFirst({
+      where: { 
+        id: pipelineId,
+        createdById: userId
+      }
     });
 
     if (!pipelineData) {
-      throw new Error('Pipeline not found');
+      throw new NotFoundError('Pipeline not found or access denied');
     }
 
     // Create pipeline run
@@ -31,9 +35,10 @@ export class MockPipelineRunnerService extends PipelineRunnerService {
         },
         branch,
         commit,
-        status: 'running',
+        status: 'pending',
         stepResults: JSON.stringify([]),
-        logs: []
+        logs: [],
+        startedAt: new Date()
       }
     });
 

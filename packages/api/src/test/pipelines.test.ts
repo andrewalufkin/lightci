@@ -1,81 +1,53 @@
-import app, { cleanupForTests } from '../app';
-import { testUser, createTestUser } from './fixtures/users';
-import { testDb, closeTestDb } from './utils/testDb';
+import app, { cleanupForTests } from '../app.js';
+import { testUser, createTestUser } from './fixtures/users.js';
+import { testDb, closeTestDb, setupTestDb, clearTestDb } from './utils/testDb.js';
+import { generateJWT } from '../utils/auth.utils.js';
+import { SchedulerService } from '../services/scheduler.service.js';
+import { PipelineRunnerService } from '../services/pipeline-runner.service.js';
+import { WorkspaceService } from '../services/workspace.service.js';
 import request from 'supertest';
-import { generateJWT } from '../utils/auth.utils';
-import { SchedulerService } from '../services/scheduler.service';
-import { PipelineRunnerService } from '../services/pipeline-runner.service';
-import { WorkspaceService } from '../services/workspace.service';
 
 describe('Pipeline Endpoints', () => {
   let authToken: string;
   let userId: string;
-  let supertest: any;
+  let testRequest: any;
   let schedulerService: SchedulerService;
   let pipelineRunnerService: PipelineRunnerService;
+  let user: any;
 
-  beforeAll(() => {
-    supertest = request(app);
-    // Set NODE_ENV to test
+  beforeAll(async () => {
+    // Set up test database
+    await setupTestDb();
+    
+    testRequest = request(app);
     process.env.NODE_ENV = 'test';
     
-    // Initialize services that might be created during tests
+    // Initialize services
     const workspaceService = new WorkspaceService();
     pipelineRunnerService = new PipelineRunnerService(workspaceService);
     schedulerService = new SchedulerService(pipelineRunnerService);
   });
 
-  afterAll(async () => {
-    // Use the app's cleanup function to ensure all services are properly stopped
-    await cleanupForTests();
-    
-    // Stop all scheduled jobs
-    if (schedulerService) {
-      schedulerService.stopAll();
-    }
-    
-    // Clean up pipeline runner service
-    if (pipelineRunnerService) {
-      await pipelineRunnerService.cleanup();
-    }
-    
-    // We can't use require in ESM, so we'll just try to stop the scheduler directly
-    try {
-      schedulerService.stopAll();
-    } catch (error) {
-      console.error('Error stopping scheduler:', error);
-    }
-    
-    // Close the database connection to prevent the test from hanging
-    await closeTestDb();
-    
-    // Add a small delay to ensure all async operations complete
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // Force exit any remaining event loops
-    process.removeAllListeners();
-    
-    // Force garbage collection if available
-    if (global.gc) {
-      global.gc();
-    }
-  });
-
   beforeEach(async () => {
-    // Delete pipeline runs first to handle foreign key constraints
-    await testDb.pipelineRun.deleteMany();
-    await testDb.pipeline.deleteMany();
-    await testDb.user.deleteMany();
-    const user = await createTestUser();
+    // Clear database and create fresh test user before each test
+    await clearTestDb();
+    user = await createTestUser();
     userId = user.id;
     authToken = generateJWT(user);
   });
 
-  afterEach(async () => {
-    // Delete pipeline runs first to handle foreign key constraints
-    await testDb.pipelineRun.deleteMany();
-    await testDb.pipeline.deleteMany();
-    await testDb.user.deleteMany();
+  afterAll(async () => {
+    // Clean up in reverse order of creation
+    if (schedulerService) {
+      schedulerService.stopAll();
+    }
+    
+    if (pipelineRunnerService) {
+      await pipelineRunnerService.cleanup();
+    }
+
+    await cleanupForTests();
+    await closeTestDb();
   });
 
   describe('POST /api/pipelines', () => {
@@ -93,7 +65,7 @@ describe('Pipeline Endpoints', () => {
     };
 
     it('should create a pipeline with valid data', async () => {
-      const response = await supertest
+      const response = await testRequest
         .post('/api/pipelines')
         .set('Authorization', `Bearer ${authToken}`)
         .send(validPipeline);
@@ -113,7 +85,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await supertest
+      const response = await testRequest
         .post('/api/pipelines')
         .send(validPipeline);
 
@@ -126,7 +98,7 @@ describe('Pipeline Endpoints', () => {
         // Missing required fields
       };
 
-      const response = await supertest
+      const response = await testRequest
         .post('/api/pipelines')
         .set('Authorization', `Bearer ${authToken}`)
         .send(invalidPipeline);
@@ -160,7 +132,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should list all pipelines for the user', async () => {
-      const response = await supertest
+      const response = await testRequest
         .get('/api/pipelines')
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -174,7 +146,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should support pagination', async () => {
-      const response = await supertest
+      const response = await testRequest
         .get('/api/pipelines?page=1&limit=1')
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -189,7 +161,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await supertest
+      const response = await testRequest
         .get('/api/pipelines');
 
       expect(response.status).toBe(401);
@@ -213,17 +185,17 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should get pipeline by id', async () => {
-      const response = await supertest
+      const response = await testRequest
         .get(`/api/pipelines/${pipelineId}`)
         .set('Authorization', `Bearer ${authToken}`);
 
       expect(response.status).toBe(200);
-      expect(response.body).toHaveProperty('id', pipelineId);
-      expect(response.body.createdById).toBe(userId);
+      expect(response.body.data).toHaveProperty('id', pipelineId);
+      expect(response.body.data.createdById).toBe(userId);
     });
 
     it('should return 404 for non-existent pipeline', async () => {
-      const response = await supertest
+      const response = await testRequest
         .get('/api/pipelines/non-existent-id')
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -231,7 +203,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await supertest
+      const response = await testRequest
         .get(`/api/pipelines/${pipelineId}`);
 
       expect(response.status).toBe(401);
@@ -260,14 +232,14 @@ describe('Pipeline Endpoints', () => {
         description: 'Updated description'
       };
 
-      const response = await supertest
+      const response = await testRequest
         .put(`/api/pipelines/${pipelineId}`)
         .set('Authorization', `Bearer ${authToken}`)
         .send(updates);
 
       expect(response.status).toBe(200);
-      expect(response.body.name).toBe(updates.name);
-      expect(response.body.description).toBe(updates.description);
+      expect(response.body.data.name).toBe(updates.name);
+      expect(response.body.data.description).toBe(updates.description);
 
       // Verify updates in database
       const pipeline = await testDb.pipeline.findUnique({
@@ -296,7 +268,7 @@ describe('Pipeline Endpoints', () => {
         }
       });
 
-      const response = await supertest
+      const response = await testRequest
         .put(`/api/pipelines/${otherPipeline.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .send({ name: 'Hacked Pipeline' });
@@ -312,7 +284,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await supertest
+      const response = await testRequest
         .put(`/api/pipelines/${pipelineId}`)
         .send({ name: 'Updated Pipeline' });
 
@@ -337,11 +309,11 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should delete pipeline', async () => {
-      const response = await supertest
+      const response = await testRequest
         .delete(`/api/pipelines/${pipelineId}`)
         .set('Authorization', `Bearer ${authToken}`);
 
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(204);
 
       // Verify pipeline was deleted
       const pipeline = await testDb.pipeline.findUnique({
@@ -369,7 +341,7 @@ describe('Pipeline Endpoints', () => {
         }
       });
 
-      const response = await supertest
+      const response = await testRequest
         .delete(`/api/pipelines/${otherPipeline.id}`)
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -384,7 +356,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await supertest
+      const response = await testRequest
         .delete(`/api/pipelines/${pipelineId}`);
 
       expect(response.status).toBe(401);
@@ -413,7 +385,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should trigger pipeline run', async () => {
-      const response = await supertest
+      const response = await testRequest
         .post(`/api/pipelines/${pipelineId}/trigger`)
         .set('Authorization', `Bearer ${authToken}`)
         .send({
@@ -453,7 +425,7 @@ describe('Pipeline Endpoints', () => {
         }
       });
 
-      const response = await supertest
+      const response = await testRequest
         .post(`/api/pipelines/${otherPipeline.id}/trigger`)
         .set('Authorization', `Bearer ${authToken}`)
         .send({
@@ -465,7 +437,7 @@ describe('Pipeline Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await supertest
+      const response = await testRequest
         .post(`/api/pipelines/${pipelineId}/trigger`)
         .send({
           branch: 'main'
