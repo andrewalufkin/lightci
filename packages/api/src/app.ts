@@ -51,6 +51,7 @@ const initializeApp = async () => {
     schedulerService.initialize().catch(error => {
       console.error('Failed to initialize scheduler service:', error);
     });
+    pipelineStateService.startMonitoring();
   }
 
   // Configure routes
@@ -79,7 +80,8 @@ const cleanup = async () => {
     await pipelineRunnerService.cleanup();
   }
   
-  // Clean up running pipelines
+  // Clean up running pipelines and stop monitoring
+  pipelineStateService.stopMonitoring();
   await pipelineStateService.cleanupRunningPipelines();
   
   // Stop artifact cleanup

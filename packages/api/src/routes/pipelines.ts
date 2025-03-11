@@ -30,7 +30,12 @@ const schedulerService = new SchedulerService(pipelineRunnerService);
 // Use testDb in tests, otherwise use the regular prisma client
 const dbClient = isTest ? testDb : prisma;
 const pipelineService = new PipelineService(engineService, schedulerService, dbClient);
-const pipelineController = new PipelineController(pipelineService, workspaceService);
+const pipelineController = new PipelineController(
+  pipelineService, 
+  workspaceService,
+  pipelineRunnerService,
+  schedulerService
+);
 
 // Pipeline schema validation
 const pipelineSchema = {

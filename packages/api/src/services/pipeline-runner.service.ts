@@ -72,33 +72,76 @@ export class PipelineRunnerService {
 
   private async executeCommand(command: string, workingDir: string, env: Record<string, string> = {}): Promise<{ output: string; error?: string }> {
     try {
-      console.log(`[PipelineRunner] Executing command in directory:`, {
+      // Check if working directory exists and is writable
+      try {
+        await fs.access(workingDir, fs.constants.W_OK);
+        console.log(`[PipelineRunner] Working directory ${workingDir} is accessible and writable`);
+      } catch (error) {
+        console.error(`[PipelineRunner] Working directory is not accessible or writable:`, {
+          workingDir,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          stack: error instanceof Error ? error.stack : undefined
+        });
+        throw new Error(`Working directory ${workingDir} is not accessible or writable: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+
+      // Log command execution details
+      console.log(`[PipelineRunner] Executing command:`, {
         command,
         workingDir,
-        exists: await fs.access(workingDir).then(() => true).catch(() => false)
+        environment: Object.keys(env),
+        timestamp: new Date().toISOString()
       });
 
       // Create a clean environment without NODE_OPTIONS
       const cleanEnv = { ...process.env, ...env };
       delete cleanEnv.NODE_OPTIONS;
 
+      // Execute command with timeout and buffer limits
       const { stdout, stderr } = await execAsync(command, {
         cwd: workingDir,
         env: cleanEnv,
         timeout: 30 * 60 * 1000, // 30 minute timeout
+        maxBuffer: 10 * 1024 * 1024 // 10MB buffer for output
       });
+
+      // Log successful execution
+      console.log(`[PipelineRunner] Command executed successfully:`, {
+        command,
+        workingDir,
+        stdoutLength: stdout.length,
+        stderrLength: stderr.length,
+        timestamp: new Date().toISOString()
+      });
+
+      // Log output if it's not too long
+      if (stdout.length + stderr.length < 1024) {
+        console.log(`[PipelineRunner] Command output:`, {
+          stdout,
+          stderr
+        });
+      }
+
       return { output: stdout + stderr };
     } catch (error: any) {
-      console.error('[PipelineRunner] Command execution failed:', {
+      // Log detailed error information
+      console.error(`[PipelineRunner] Command execution failed:`, {
         command,
         workingDir,
         error: error.message,
         stdout: error.stdout,
-        stderr: error.stderr
+        stderr: error.stderr,
+        code: error.code,
+        signal: error.signal,
+        killed: error.killed,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
       });
+
+      // Return error details
       return { 
-        output: error.stdout + error.stderr,
-        error: error.message 
+        output: (error.stdout || '') + (error.stderr || ''),
+        error: `Command failed with exit code ${error.code}${error.signal ? ` (signal: ${error.signal})` : ''}: ${error.message}`
       };
     }
   }
@@ -135,7 +178,7 @@ export class PipelineRunnerService {
     // Add workspaceId and cast to PipelineWithSteps
     const pipeline = {
       ...pipelineData,
-      workspaceId: 'default' // Add workspaceId directly since it doesn't exist on pipelineData
+      workspaceId: 'default'
     } as unknown as PipelineWithSteps;
 
     // Initialize step results from pipeline steps
@@ -146,7 +189,6 @@ export class PipelineRunnerService {
     });
 
     const stepResults = steps.map(step => {
-      // Use the step name as the ID if no ID is provided
       const stepId = step.id || step.name;
       console.log(`[PipelineRunner] Creating step result:`, {
         stepId,
@@ -165,11 +207,6 @@ export class PipelineRunnerService {
         output: undefined as string | undefined,
         error: undefined as string | undefined
       };
-    });
-
-    console.log(`[PipelineRunner] Created step results:`, {
-      pipelineId,
-      stepResults: stepResults.map(sr => ({ id: sr.id, name: sr.name }))
     });
 
     // Create pipeline run
@@ -192,27 +229,44 @@ export class PipelineRunnerService {
       data: { status: 'running' }
     });
 
-    // In test mode, don't run the pipeline asynchronously to avoid hanging
-    if (process.env.NODE_ENV === 'test') {
-      // For tests, we just return the run ID without actually executing the pipeline
-      // This prevents hanging due to background processes during tests
-      return pipelineRun.id;
-    }
-
     // Track this execution
     this.activeExecutions.add(pipelineRun.id);
 
-    // Run the pipeline asynchronously in non-test environments
-    this.executePipeline(pipeline, pipelineRun.id, branch)
-      .catch(error => {
-        console.error('Pipeline execution error:', error);
-      })
-      .finally(() => {
-        // Remove from active executions when done
-        this.activeExecutions.delete(pipelineRun.id);
-      });
+    console.log(`[PipelineRunner] Starting pipeline execution for run ${pipelineRun.id}`);
 
-    return pipelineRun.id;
+    // Execute pipeline immediately in test mode
+    if (process.env.NODE_ENV === 'test') {
+      return pipelineRun.id;
+    }
+
+    // Execute pipeline in non-test mode with proper error handling
+    try {
+      // Start execution immediately instead of using setImmediate
+      this.executePipeline(pipeline, pipelineRun.id, branch)
+        .catch(error => {
+          console.error(`[PipelineRunner] Pipeline execution failed:`, error);
+          // Update pipeline run status to failed
+          this.prismaClient.pipelineRun.update({
+            where: { id: pipelineRun.id },
+            data: {
+              status: 'failed',
+              error: error instanceof Error ? error.message : 'Unknown error',
+              completedAt: new Date()
+            }
+          }).catch(err => {
+            console.error(`[PipelineRunner] Failed to update pipeline run status:`, err);
+          });
+        })
+        .finally(() => {
+          // Clean up execution tracking
+          this.activeExecutions.delete(pipelineRun.id);
+        });
+
+      return pipelineRun.id;
+    } catch (error) {
+      console.error(`[PipelineRunner] Error starting pipeline execution:`, error);
+      throw error;
+    }
   }
 
   private async handleDeployment(pipeline: PipelineWithSteps, runId: string) {
@@ -263,6 +317,8 @@ export class PipelineRunnerService {
     let timeoutId: NodeJS.Timeout | undefined;
 
     try {
+      console.log(`[PipelineRunner] Starting pipeline execution for run ${runId} in directory ${process.cwd()}`);
+
       // Set up timeout
       const timeoutPromise = new Promise((_, reject) => {
         timeoutId = setTimeout(() => {
@@ -275,197 +331,155 @@ export class PipelineRunnerService {
 
       // Create the execution promise
       const executionPromise = (async () => {
-        // Get workspace
-        workspace = await this.workspaceService.createWorkspace({
-          name: pipeline.name,
-          repository: pipeline.repository
-        });
-        const workspacePath = workspace.path;
-        console.log(`[PipelineRunner] Created workspace at ${workspacePath}`);
-
-        // Parse steps
-        const steps = (typeof pipeline.steps === 'string' ? JSON.parse(pipeline.steps) : pipeline.steps) as PipelineStep[];
-        console.log(`[PipelineRunner] Parsed steps:`, {
-          runId,
-          steps: steps.map(s => ({ 
-            id: s.id, 
-            name: s.name,
-            runLocation: s.runLocation,
-            runOnDeployedInstance: s.runOnDeployedInstance
-          }))
-        });
-
-        // Initialize step results
-        const stepResults = steps.map(step => ({
-          id: step.id || '',
-          name: step.name,
-          command: step.command,
-          status: 'pending' as PipelineStepResult['status'],
-          environment: step.environment || {},
-          runLocation: (step.runLocation || 'local') as 'local' | 'deployed',
-          runOnDeployedInstance: step.runOnDeployedInstance || false,
-          startTime: undefined as Date | undefined,
-          endTime: undefined as Date | undefined,
-          output: undefined as string | undefined,
-          error: undefined as string | undefined
-        }));
-
-        // Execute each step
-        for (let i = 0; i < steps.length; i++) {
-          const step = steps[i];
-          const stepResult = stepResults.find(sr => 
-            (step.id && sr.id === step.id) ||
-            (!step.id && sr.id === step.name)
-          );
-
-          if (!stepResult) {
-            console.log(`[PipelineRunner] Warning: No step result found for step:`, {
-              runId,
-              stepId: step.id,
-              stepName: step.name,
-              stepResults: JSON.stringify(stepResults)
-            });
-            continue;
+        try {
+          // Get workspace
+          console.log(`[PipelineRunner] Creating workspace for pipeline ${pipeline.id}`);
+          workspace = await this.workspaceService.createWorkspace({
+            name: pipeline.name,
+            repository: pipeline.repository
+          });
+          const workspacePath = workspace.path;
+          console.log(`[PipelineRunner] Created workspace at ${workspacePath}, checking directory exists...`);
+          
+          // Verify workspace directory exists and is writable
+          try {
+            await fs.access(workspacePath, fs.constants.W_OK);
+            console.log(`[PipelineRunner] Workspace directory ${workspacePath} is accessible and writable`);
+          } catch (error: unknown) {
+            console.error(`[PipelineRunner] Workspace directory ${workspacePath} is not accessible:`, error);
+            throw new Error(`Failed to access workspace directory: ${error instanceof Error ? error.message : String(error)}`);
           }
 
-          // Use type assertion to ensure TypeScript understands we can set this to 'running'
-          stepResult.status = 'running';
-          stepResult.startTime = new Date();
+          // Parse steps
+          const steps = (typeof pipeline.steps === 'string' ? JSON.parse(pipeline.steps) : pipeline.steps) as PipelineStep[];
+          console.log(`[PipelineRunner] Starting execution of ${steps.length} steps in workspace ${workspacePath}`);
+
+          // Initialize step results
+          const stepResults = steps.map(step => ({
+            id: step.id || '',
+            name: step.name,
+            command: step.command,
+            status: 'pending' as PipelineStepResult['status'],
+            environment: step.environment || {},
+            runLocation: (step.runLocation || 'local') as 'local' | 'deployed',
+            runOnDeployedInstance: step.runOnDeployedInstance || false,
+            startTime: undefined as Date | undefined,
+            endTime: undefined as Date | undefined,
+            output: undefined as string | undefined,
+            error: undefined as string | undefined
+          }));
+
+          // Execute each step
+          for (let i = 0; i < steps.length; i++) {
+            const step = steps[i];
+            console.log(`[PipelineRunner] Starting step ${i + 1}/${steps.length}: ${step.name} for run ${runId}`);
+            
+            const stepResult = stepResults.find(sr => 
+              (step.id && sr.id === step.id) ||
+              (!step.id && sr.id === step.name)
+            );
+
+            if (!stepResult) {
+              console.error(`[PipelineRunner] No step result found for step:`, {
+                runId,
+                stepId: step.id,
+                stepName: step.name,
+                stepResults: JSON.stringify(stepResults)
+              });
+              continue;
+            }
+
+            // Update step status to running
+            stepResult.status = 'running';
+            stepResult.startTime = new Date();
+            
+            console.log(`[PipelineRunner] Updating step status to running:`, {
+              runId,
+              stepName: step.name,
+              stepId: step.id
+            });
+
+            await this.prismaClient.pipelineRun.update({
+              where: { id: runId },
+              data: {
+                stepResults: JSON.stringify(stepResults)
+              }
+            });
+
+            const command = step.name === 'Source' 
+              ? `git clone ${pipeline.repository} . && git checkout ${branch}`
+              : step.command;
+
+            console.log(`[PipelineRunner] Executing command for step ${step.name}:`, {
+              runId,
+              command,
+              workingDir: workspacePath
+            });
+
+            let result: ExecutionResult | undefined;
+            try {
+              result = await this.executeCommand(command, workspacePath, step.environment || {});
+            } catch (error: unknown) {
+              console.error(`[PipelineRunner] Step ${step.name} failed:`, {
+                runId,
+                stepId: step.id,
+                error
+              });
+
+              // Update step status to failed
+              stepResult.status = 'failed';
+              stepResult.endTime = new Date();
+              stepResult.error = error instanceof Error ? error.message : 'Unknown error';
+              stepResult.output = result?.output;
+
+              await this.prismaClient.pipelineRun.update({
+                where: { id: runId },
+                data: {
+                  stepResults: JSON.stringify(stepResults)
+                }
+              });
+
+              console.log(`[PipelineRunner] Step ${step.name} marked as completed:`, {
+                runId,
+                stepId: step.id
+              });
+            }
+          }
+
+          // After all steps complete successfully
+          if (workspacePath) {
+            try {
+              await this.collectArtifacts(pipeline, runId, workspacePath);
+            } catch (error) {
+              console.error(`[PipelineRunner] Failed to collect artifacts:`, error);
+            }
+          }
+
+          console.log(`[PipelineRunner] All steps completed successfully for run ${runId}`);
 
           await this.prismaClient.pipelineRun.update({
             where: { id: runId },
             data: {
-              stepResults: JSON.stringify(stepResults)
+              status: 'completed',
+              completedAt: new Date()
             }
           });
 
-          const command = step.name === 'Source' 
-            ? `git clone ${pipeline.repository} . && git checkout ${branch}`
-            : step.command;
+          await this.prismaClient.pipeline.update({
+            where: { id: pipeline.id },
+            data: { status: 'completed' }
+          });
 
-          let result: ExecutionResult;
-          // Check if this is a deployment step
-          if (step.name === 'Deploy' || step.name === 'Deployment' || step.type === 'deploy') {
-            console.log(`[PipelineRunner] Handling deployment step ${step.name}:`, {
-              runId,
-              stepId: step.id,
-              type: step.type,
-              name: step.name
-            });
-            result = await this.handleDeployment(pipeline, runId);
-            deploymentCompleted = true;
-          } 
-          // Check if this step should run on deployed instance
-          else if (deploymentCompleted && (
-            step.runLocation === 'deployed' || 
-            step.runOnDeployedInstance === true || 
-            (pipeline.deploymentEnabled && pipeline.deploymentConfig)
-          )) {
-            console.log(`[PipelineRunner] Executing step ${step.name} on deployed instance:`, {
-              runId,
-              stepId: step.id,
-              runLocation: step.runLocation,
-              runOnDeployedInstance: step.runOnDeployedInstance,
-              deploymentEnabled: pipeline.deploymentEnabled
-            });
-            
-            // Ensure deploymentConfig is properly structured
-            let deploymentConfig: DeploymentConfig;
-            if (typeof pipeline.deploymentConfig === 'object' && pipeline.deploymentConfig) {
-              deploymentConfig = {
-                platform: (pipeline.deploymentConfig as any).platform || 'default',
-                config: (pipeline.deploymentConfig as any).config || {}
-              };
-            } else {
-              deploymentConfig = {
-                platform: 'default',
-                config: {}
-              };
-            }
-            
-            result = await this.executeOnDeployedInstance(
-              command,
-              deploymentConfig,
-              step.environment || {}
-            );
-          } else {
-            console.log(`[PipelineRunner] Executing step ${step.name} locally:`, {
-              runId,
-              stepId: step.id,
-              runLocation: step.runLocation,
-              runOnDeployedInstance: step.runOnDeployedInstance,
-              deploymentEnabled: pipeline.deploymentEnabled
-            });
-            result = await this.executeCommand(
-              command,
-              workspacePath,
-              step.environment || {}
-            );
-          }
-
-          if ('error' in result && result.error) {
-            // Update the step status to failed before throwing the error
-            const failedStep: PipelineStepResult = {
-              id: step.id || '',
-              name: step.name,
-              command: step.command,
-              status: 'failed',
-              environment: step.environment || {},
-              runLocation: (step.runLocation || 'local') as 'local' | 'deployed',
-              runOnDeployedInstance: step.runOnDeployedInstance || false,
-              startTime: stepResult.startTime,
-              endTime: new Date(),
-              output: result.output,
-              error: result.error
-            };
-
-            // Update the pipeline run with the failed step
-            await this.prismaClient.pipelineRun.update({
-              where: { id: runId },
-              data: {
-                stepResults: JSON.stringify([failedStep]),
-                error: result.error
-              }
-            });
-
-            throw new Error(result.error);
-          }
-
-          await this.updateStepStatus(runId, step.id || '', 'completed', stepResults, result.output);
-
-          if (step.name === 'Build') {
-            await this.collectArtifacts(pipeline, runId, workspacePath);
-          }
-        }
-
-        // After all steps complete successfully
-        if (workspacePath) {
+          // Track build minutes for billing
           try {
-            await this.collectArtifacts(pipeline, runId, workspacePath);
+            await this.billingService.trackBuildMinutes(runId);
           } catch (error) {
-            console.error(`[PipelineRunner] Failed to collect artifacts:`, error);
+            console.error(`[PipelineRunner] Error tracking build minutes:`, error);
+            // Don't fail the pipeline run if billing tracking fails
           }
-        }
-
-        await this.prismaClient.pipelineRun.update({
-          where: { id: runId },
-          data: {
-            status: 'completed',
-            completedAt: new Date()
-          }
-        });
-
-        await this.prismaClient.pipeline.update({
-          where: { id: pipeline.id },
-          data: { status: 'completed' }
-        });
-
-        // Track build minutes for billing
-        try {
-          await this.billingService.trackBuildMinutes(runId);
         } catch (error) {
-          console.error(`[PipelineRunner] Error tracking build minutes:`, error);
-          // Don't fail the pipeline run if billing tracking fails
+          console.error(`[PipelineRunner] Error in execution promise:`, error);
+          throw error;
         }
       })();
 

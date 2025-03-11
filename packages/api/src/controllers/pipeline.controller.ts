@@ -26,11 +26,16 @@ export class PipelineController {
   private workspaceService: WorkspaceService;
   private schedulerService: SchedulerService;
 
-  constructor(pipelineService: PipelineService, workspaceService: WorkspaceService) {
+  constructor(
+    pipelineService: PipelineService, 
+    workspaceService: WorkspaceService,
+    pipelineRunnerService: PipelineRunnerService,
+    schedulerService: SchedulerService
+  ) {
     this.pipelineService = pipelineService;
     this.workspaceService = workspaceService;
-    this.pipelineRunnerService = new PipelineRunnerService(this.workspaceService);
-    this.schedulerService = new SchedulerService(this.pipelineRunnerService);
+    this.pipelineRunnerService = pipelineRunnerService;
+    this.schedulerService = schedulerService;
   }
 
   public async listPipelines(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -158,6 +163,12 @@ export class PipelineController {
         triggeredBy: req.user.id,
         repository: pipeline.repository
       });
+
+      // Start pipeline execution in background
+      this.pipelineRunnerService.runPipeline(pipelineId, branch || pipeline.defaultBranch || 'main', req.user.id, commit)
+        .catch(error => {
+          console.error(`[PipelineController] Error running pipeline ${pipelineId}:`, error);
+        });
 
       res.status(201).json({
         message: 'Pipeline triggered successfully',

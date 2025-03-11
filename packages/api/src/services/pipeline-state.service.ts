@@ -3,6 +3,29 @@ import { prisma } from '../db.js';
 
 export class PipelineStateService {
   public static readonly PIPELINE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+  private monitoringInterval: NodeJS.Timeout | null = null;
+
+  startMonitoring(intervalMs: number = 60000) { // Check every minute by default
+    if (this.monitoringInterval) {
+      clearInterval(this.monitoringInterval);
+    }
+
+    this.monitoringInterval = setInterval(() => {
+      this.recoverStuckPipelines().catch(error => {
+        console.error('[PipelineStateService] Error in monitoring interval:', error);
+      });
+    }, intervalMs);
+
+    console.log(`[PipelineStateService] Started monitoring for stuck pipelines every ${intervalMs}ms`);
+  }
+
+  stopMonitoring() {
+    if (this.monitoringInterval) {
+      clearInterval(this.monitoringInterval);
+      this.monitoringInterval = null;
+      console.log('[PipelineStateService] Stopped monitoring for stuck pipelines');
+    }
+  }
 
   async recoverStuckPipelines() {
     console.log('[PipelineStateService] Checking for stuck pipelines...');
