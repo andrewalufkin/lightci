@@ -1,7 +1,9 @@
 import { Router } from 'express';
+import type { Response } from 'express-serve-static-core';
 import { userService } from '../services/user.service.js';
 import { BillingService } from '../services/billing.service.js';
-import { authenticate } from '../middleware/auth.middleware.js';
+import { authenticate, type AuthenticatedRequest } from '../middleware/auth.middleware.js';
+import { prisma } from '../lib/prisma.js';
 
 // Define explicit types for Express Request and Response
 interface ExpressRequest {
@@ -12,10 +14,11 @@ interface ExpressRequest {
   [key: string]: any;
 }
 
-interface ExpressResponse {
-  status(code: number): ExpressResponse;
-  json(body: any): void;
-  [key: string]: any;
+interface BillingUsage {
+  currentMonth: {
+    build_minutes: number;
+    storage_gb: number;
+  }
 }
 
 const router = Router();
@@ -25,9 +28,8 @@ const billingService = new BillingService();
 type AccountTier = 'free' | 'basic' | 'professional' | 'enterprise';
 
 // Get user profile
-router.get('/profile', authenticate, async (req: ExpressRequest, res: ExpressResponse) => {
+router.get('/profile', authenticate, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    // Since authenticate middleware ensures req.user exists, we can safely use it
     const user = await userService.findById(req.user.id);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
@@ -39,42 +41,67 @@ router.get('/profile', authenticate, async (req: ExpressRequest, res: ExpressRes
   }
 });
 
-// Get user's storage limit information
-router.get('/storage-limits', authenticate, async (req: ExpressRequest, res: ExpressResponse) => {
+// Get user's billing usage
+router.get('/billing/usage', authenticate, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const storageInfo = await billingService.checkStorageLimit(req.user.id);
-    // Add tier information
-    const user = await userService.findById(req.user.id);
+    const usage = await billingService.getUserBillingUsage(req.user.id);
+    res.json(usage);
+  } catch (error) {
+    console.error('[UserRoutes] Error getting billing usage:', error);
+    res.status(500).json({ error: 'Failed to get billing usage' });
+  }
+});
 
-    const tierNames: Record<AccountTier, string> = {
-      'free': 'Free',
-      'basic': 'Basic',
-      'professional': 'Professional',
-      'enterprise': 'Enterprise'
-    };
-
-    const accountTier = (user?.accountTier || 'free') as AccountTier;
-    
+// Get user's storage limits
+router.get('/storage-limits', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const limits = await billingService.checkStorageLimit(req.user.id);
     res.json({
-      ...storageInfo,
-      tier: accountTier,
-      tierName: tierNames[accountTier],
-      usagePercentage: (storageInfo.currentUsageMB / storageInfo.limitMB) * 100
+      currentUsageMB: limits.currentUsageMB,
+      limitMB: limits.limitMB,
+      remainingMB: limits.remainingMB,
+      usagePercentage: (limits.currentUsageMB / limits.limitMB) * 100,
+      tier: req.user.accountTier || 'free',
+      tierName: (req.user.accountTier || 'free').charAt(0).toUpperCase() + (req.user.accountTier || 'free').slice(1)
     });
   } catch (error) {
-    console.error('Error fetching storage limits:', error);
-    res.status(500).json({ error: 'Failed to fetch storage limits' });
+    console.error('[UserRoutes] Error getting storage limits:', error);
+    res.status(500).json({ error: 'Failed to get storage limits' });
   }
 });
 
 // Get user's artifact storage usage
-router.get('/storage-usage', authenticate, async (req: ExpressRequest, res: ExpressResponse) => {
+router.get('/storage-usage', authenticate, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const usage = await userService.calculateArtifactStorageUsage(req.user.id);
     res.json(usage);
   } catch (error) {
     console.error('Error fetching storage usage:', error);
-    res.status(500).json({ error: 'Failed to fetch storage usage' });
+    res.status(500).json({ error: 'Failed to get storage usage' });
+  }
+});
+
+// Upgrade user's plan
+router.post('/upgrade-plan', authenticate, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { plan } = req.body;
+    
+    // Validate the plan
+    const validPlans: AccountTier[] = ['free', 'basic', 'professional', 'enterprise'];
+    if (!validPlans.includes(plan as AccountTier)) {
+      return res.status(400).json({ error: 'Invalid plan selected' });
+    }
+
+    // Update user's plan in the database
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { accountTier: plan },
+    });
+
+    res.json({ message: 'Plan updated successfully' });
+  } catch (error) {
+    console.error('[UserRoutes] Error upgrading plan:', error);
+    res.status(500).json({ error: 'Failed to upgrade plan' });
   }
 });
 

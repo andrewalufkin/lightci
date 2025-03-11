@@ -28,6 +28,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { api } from '@/lib/api';
 
 interface Step {
   id: string;
@@ -189,28 +190,12 @@ const PipelineSettings: React.FC = () => {
   useEffect(() => {
     const fetchPipeline = async () => {
       try {
-        const token = localStorage.getItem('auth_token');
-        if (!token) {
-          throw new Error('Authentication required');
-        }
-
-        const response = await fetch(`/api/pipelines/${id}`, {
-          headers: {
-            'Accept': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-        });
-
-        if (!response.ok) {
-          throw new Error('Failed to fetch pipeline');
-        }
-
-        const data = await response.json();
-        console.log('Fetched pipeline data:', data);
+        const { data } = await api.get<{ data: Pipeline }>(`/pipelines/${id}`);
+        console.log('Fetched pipeline data:', data.data);
         // Ensure artifactPatterns is always an array
-        data.artifactPatterns = Array.isArray(data.artifactPatterns) ? data.artifactPatterns : [];
-        console.log('Processed artifact patterns:', data.artifactPatterns);
-        setPipeline(data);
+        data.data.artifactPatterns = Array.isArray(data.data.artifactPatterns) ? data.data.artifactPatterns : [];
+        console.log('Processed artifact patterns:', data.data.artifactPatterns);
+        setPipeline(data.data);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'An error occurred');
         console.error('Error fetching pipeline:', err);
@@ -231,23 +216,7 @@ const PipelineSettings: React.FC = () => {
   const handleDelete = async () => {
     try {
       setDeleteLoading(true);
-      const token = localStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('Authentication required');
-      }
-
-      const response = await fetch(`/api/pipelines/${id}`, {
-        method: 'DELETE',
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to delete pipeline');
-      }
-
+      await api.delete(`/pipelines/${id}`);
       navigate('/');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete pipeline');
@@ -261,27 +230,8 @@ const PipelineSettings: React.FC = () => {
     try {
       setIsUpdating(true);
       console.log('Updating pipeline with artifact patterns:', updatedPipeline.artifactPatterns);
-      const token = localStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('Authentication required');
-      }
-
-      const response = await fetch(`/api/pipelines/${id}`, {
-        method: 'PUT',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(updatedPipeline),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to update pipeline');
-      }
-
-      const data = await response.json();
-      setPipeline(data);
+      const { data } = await api.put<{ data: Pipeline }>(`/pipelines/${id}`, updatedPipeline);
+      setPipeline(data.data);
       toast.success('Pipeline updated successfully');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to update pipeline');
@@ -562,7 +512,7 @@ const PipelineSettings: React.FC = () => {
                   </Button>
                 </div>
                 <div className="space-y-2">
-                  {pipeline.steps[0]?.environment && Object.entries(pipeline.steps[0].environment).map(([key, value]) => (
+                  {pipeline.steps?.length > 0 && pipeline.steps[0]?.environment && Object.entries(pipeline.steps[0].environment).map(([key, value]) => (
                     <div key={key} className="flex items-center justify-between bg-muted p-2 rounded">
                       <div className="text-sm">
                         <span className="font-mono">{key}</span>: {value}
@@ -1228,11 +1178,11 @@ const PipelineSettings: React.FC = () => {
                 onDragEnd={handleDragEnd}
               >
                 <SortableContext
-                  items={pipeline.steps.map(step => step.id)}
+                  items={(pipeline.steps || []).map(step => step.id)}
                   strategy={verticalListSortingStrategy}
                 >
                   <div className="space-y-4">
-                    {pipeline.steps.map((step, index) => (
+                    {(pipeline.steps || []).map((step, index) => (
                       <SortableStepItem
                         key={step.id}
                         step={step}

@@ -1,17 +1,24 @@
-import request from 'supertest';
-import app from '../app';
-import { testUser, createTestUser } from './fixtures/users';
-import { testDb } from './utils/testDb';
+import app from '../app.js';
+import { testUser, createTestUser } from './fixtures/users.js';
+import { testDb } from './utils/testDb.js';
+import { createRequest } from './utils/supertest.js';
 
 describe('Pipeline Run Endpoints', () => {
   let authToken: string;
   let userId: string;
   let pipelineId: string;
+  let expressApp: any;
+  let request: any;
+
+  beforeAll(async () => {
+    request = await createRequest();
+    expressApp = await app;
+  });
 
   beforeEach(async () => {
     const user = await createTestUser();
     userId = user.id;
-    const response = await request(app)
+    const response = await request(expressApp)
       .post('/api/auth/login')
       .send({
         email: testUser.email,
@@ -68,7 +75,7 @@ describe('Pipeline Run Endpoints', () => {
     });
 
     it('should list all pipeline runs', async () => {
-      const response = await request(app)
+      const response = await request(expressApp)
         .get('/api/pipeline-runs')
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -81,7 +88,7 @@ describe('Pipeline Run Endpoints', () => {
     });
 
     it('should filter by pipeline id', async () => {
-      const response = await request(app)
+      const response = await request(expressApp)
         .get(`/api/pipeline-runs?pipelineId=${pipelineId}`)
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -91,7 +98,7 @@ describe('Pipeline Run Endpoints', () => {
     });
 
     it('should filter by status', async () => {
-      const response = await request(app)
+      const response = await request(expressApp)
         .get('/api/pipeline-runs?status=completed')
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -101,7 +108,7 @@ describe('Pipeline Run Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await request(app)
+      const response = await request(expressApp)
         .get('/api/pipeline-runs');
 
       expect(response.status).toBe(401);
@@ -135,7 +142,7 @@ describe('Pipeline Run Endpoints', () => {
     });
 
     it('should get pipeline run by id', async () => {
-      const response = await request(app)
+      const response = await request(expressApp)
         .get(`/api/pipeline-runs/${runId}`)
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -147,7 +154,7 @@ describe('Pipeline Run Endpoints', () => {
     });
 
     it('should return 404 for non-existent run', async () => {
-      const response = await request(app)
+      const response = await request(expressApp)
         .get('/api/pipeline-runs/non-existent-id')
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -155,7 +162,7 @@ describe('Pipeline Run Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await request(app)
+      const response = await request(expressApp)
         .get(`/api/pipeline-runs/${runId}`);
 
       expect(response.status).toBe(401);
@@ -181,7 +188,7 @@ describe('Pipeline Run Endpoints', () => {
     });
 
     it('should update run status', async () => {
-      const response = await request(app)
+      const response = await request(expressApp)
         .put(`/api/pipeline-runs/${runId}/status`)
         .set('Authorization', `Bearer ${authToken}`)
         .send({
@@ -209,7 +216,7 @@ describe('Pipeline Run Endpoints', () => {
 
     it('should validate status transitions', async () => {
       // Try to transition from pending directly to completed
-      const response = await request(app)
+      const response = await request(expressApp)
         .put(`/api/pipeline-runs/${runId}/status`)
         .set('Authorization', `Bearer ${authToken}`)
         .send({
@@ -221,7 +228,7 @@ describe('Pipeline Run Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await request(app)
+      const response = await request(expressApp)
         .put(`/api/pipeline-runs/${runId}/status`)
         .send({
           status: 'running'
@@ -255,7 +262,7 @@ describe('Pipeline Run Endpoints', () => {
     });
 
     it('should list artifacts for a run', async () => {
-      const response = await request(app)
+      const response = await request(expressApp)
         .get(`/api/pipeline-runs/${runId}/artifacts`)
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -281,7 +288,7 @@ describe('Pipeline Run Endpoints', () => {
         }
       });
 
-      const response = await request(app)
+      const response = await request(expressApp)
         .get(`/api/pipeline-runs/${emptyRun.id}/artifacts`)
         .set('Authorization', `Bearer ${authToken}`);
 
@@ -291,7 +298,7 @@ describe('Pipeline Run Endpoints', () => {
     });
 
     it('should require authentication', async () => {
-      const response = await request(app)
+      const response = await request(expressApp)
         .get(`/api/pipeline-runs/${runId}/artifacts`);
 
       expect(response.status).toBe(401);

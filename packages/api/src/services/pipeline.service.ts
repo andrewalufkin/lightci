@@ -30,6 +30,15 @@ export class PipelineService {
   }
 
   private transformToModelPipeline(dbPipeline: any): Pipeline {
+    console.log('[PipelineService] Raw steps data:', dbPipeline.steps);
+    console.log('[PipelineService] Steps data type:', typeof dbPipeline.steps);
+    
+    const steps = typeof dbPipeline.steps === 'string' 
+      ? JSON.parse(dbPipeline.steps) 
+      : (Array.isArray(dbPipeline.steps) ? dbPipeline.steps : []);
+    
+    console.log('[PipelineService] Transformed steps:', steps);
+    
     return {
       id: dbPipeline.id,
       name: dbPipeline.name,
@@ -38,7 +47,7 @@ export class PipelineService {
       description: dbPipeline.description || undefined,
       defaultBranch: dbPipeline.defaultBranch,
       status: dbPipeline.status as Pipeline['status'] || 'pending',
-      steps: typeof dbPipeline.steps === 'string' ? JSON.parse(dbPipeline.steps) : dbPipeline.steps || [],
+      steps: steps,
       triggers: dbPipeline.triggers ? (typeof dbPipeline.triggers === 'string' ? JSON.parse(dbPipeline.triggers) : dbPipeline.triggers) : {},
       schedule: dbPipeline.schedule ? (typeof dbPipeline.schedule === 'string' ? JSON.parse(dbPipeline.schedule) : dbPipeline.schedule) : {},
       webhookConfig: dbPipeline.webhookConfig ? (typeof dbPipeline.webhookConfig === 'string' ? JSON.parse(dbPipeline.webhookConfig) : dbPipeline.webhookConfig) : {},

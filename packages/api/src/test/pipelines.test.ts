@@ -1,4 +1,4 @@
-import app, { cleanupForTests } from '../app.js';
+import { default as appPromise, cleanupForTests } from '../app.js';
 import { testUser, createTestUser } from './fixtures/users.js';
 import { testDb, closeTestDb, setupTestDb, clearTestDb } from './utils/testDb.js';
 import { generateJWT } from '../utils/auth.utils.js';
@@ -14,13 +14,17 @@ describe('Pipeline Endpoints', () => {
   let schedulerService: SchedulerService;
   let pipelineRunnerService: PipelineRunnerService;
   let user: any;
+  let server: any;
 
   beforeAll(async () => {
     // Set up test database
     await setupTestDb();
     
-    testRequest = request(app);
     process.env.NODE_ENV = 'test';
+    // Initialize app and start server
+    const app = await appPromise;
+    server = app.listen();
+    testRequest = request(server);
     
     // Initialize services
     const workspaceService = new WorkspaceService();
@@ -48,6 +52,11 @@ describe('Pipeline Endpoints', () => {
 
     await cleanupForTests();
     await closeTestDb();
+    
+    // Close the server
+    if (server) {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   describe('POST /api/pipelines', () => {
