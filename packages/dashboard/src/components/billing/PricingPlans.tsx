@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Check } from 'lucide-react';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
+import { UpgradeDialog } from './UpgradeDialog';
 
 interface PricingPlan {
   name: string;
@@ -131,7 +132,19 @@ export const PricingPlans: React.FC<PricingPlansProps> = ({
   onClose,
   currentPlan,
 }) => {
-  const handleUpgrade = async (planName: string) => {
+  const [selectedPlan, setSelectedPlan] = useState<PricingPlan | null>(null);
+
+  const handleUpgrade = (plan: PricingPlan) => {
+    if (plan.price === 0) {
+      // For free plan, directly upgrade
+      handleFreePlanUpgrade(plan.name);
+    } else {
+      // For paid plans, show payment dialog
+      setSelectedPlan(plan);
+    }
+  };
+
+  const handleFreePlanUpgrade = async (planName: string) => {
     try {
       const normalizedPlanName = planName.toLowerCase();
       if (normalizedPlanName === currentPlan.toLowerCase()) {
@@ -140,7 +153,7 @@ export const PricingPlans: React.FC<PricingPlansProps> = ({
       }
 
       await api.post('/user/upgrade-plan', { plan: normalizedPlanName });
-      toast.success(`Successfully upgraded to ${planName} plan`);
+      toast.success(`Successfully switched to ${planName} plan`);
       onClose();
       // Reload the page to reflect changes
       window.location.reload();
@@ -150,77 +163,105 @@ export const PricingPlans: React.FC<PricingPlansProps> = ({
     }
   };
 
+  const getPlanActionText = (currentPlan: string, targetPlan: string): string => {
+    const planOrder = {
+      'free': 0,
+      'basic': 1,
+      'professional': 2,
+      'enterprise': 3
+    };
+    
+    const currentPlanLevel = planOrder[currentPlan.toLowerCase() as keyof typeof planOrder];
+    const targetPlanLevel = planOrder[targetPlan.toLowerCase() as keyof typeof planOrder];
+    
+    if (targetPlanLevel < currentPlanLevel) {
+      return 'Downgrade';
+    }
+    return 'Change Plan';
+  };
+
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-5xl">
-        <DialogHeader>
-          <DialogTitle>Choose Your Plan</DialogTitle>
-          <DialogDescription>
-            Select the plan that best fits your needs. All plans include automatic upgrades and 24/7 system monitoring.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mt-4">
-          {plans.map((plan) => (
-            <div
-              key={plan.name}
-              className="border rounded-lg p-6 space-y-4 hover:border-blue-500 transition-colors"
-            >
-              <div className="space-y-2">
-                <h3 className="text-xl font-bold">{plan.name}</h3>
-                <p className="text-3xl font-bold">
-                  ${plan.price}
-                  <span className="text-base font-normal text-gray-600">/month</span>
-                </p>
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <h4 className="font-semibold mb-2">Resources</h4>
-                  <ul className="space-y-2 text-sm">
-                    <li>Storage: {plan.resources.storage}</li>
-                    <li>Build Minutes: {plan.resources.buildMinutes}</li>
-                    <li>Artifact Storage: {plan.resources.artifactStorage}</li>
-                    <li>Deployment: {plan.resources.deploymentInstances}</li>
-                  </ul>
-                </div>
-
-                <div>
-                  <h4 className="font-semibold mb-2">Features</h4>
-                  <ul className="space-y-2">
-                    {plan.features.map((feature, index) => (
-                      <li key={index} className="flex items-start space-x-2 text-sm">
-                        <Check className="h-4 w-4 text-green-500 mt-0.5" />
-                        <span>{feature}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div>
-                  <h4 className="font-semibold mb-2">Overages</h4>
-                  <ul className="space-y-2 text-sm">
-                    <li>Storage: {plan.overages.storage}</li>
-                    <li>Build Minutes: {plan.overages.buildMinutes}</li>
-                    <li>Artifact Storage: {plan.overages.artifactStorage}</li>
-                    <li>Deployment: {plan.overages.deploymentInstances}</li>
-                  </ul>
-                </div>
-              </div>
-
-              <Button
-                className="w-full mt-4"
-                variant={currentPlan.toLowerCase() === plan.name.toLowerCase() ? 'secondary' : 'default'}
-                onClick={() => handleUpgrade(plan.name)}
-                disabled={currentPlan.toLowerCase() === plan.name.toLowerCase()}
+    <>
+      <Dialog open={isOpen} onOpenChange={onClose}>
+        <DialogContent className="max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>Choose Your Plan</DialogTitle>
+            <DialogDescription>
+              Select the plan that best fits your needs. All plans include automatic upgrades and 24/7 system monitoring.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mt-4">
+            {plans.map((plan) => (
+              <div
+                key={plan.name}
+                className="border rounded-lg p-6 space-y-4 hover:border-blue-500 transition-colors"
               >
-                {currentPlan.toLowerCase() === plan.name.toLowerCase()
-                  ? 'Current Plan'
-                  : 'Upgrade'}
-              </Button>
-            </div>
-          ))}
-        </div>
-      </DialogContent>
-    </Dialog>
+                <div className="space-y-2">
+                  <h3 className="text-xl font-bold">{plan.name}</h3>
+                  <p className="text-3xl font-bold">
+                    ${plan.price}
+                    <span className="text-base font-normal text-gray-600">/month</span>
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="font-semibold mb-2">Resources</h4>
+                    <ul className="space-y-2 text-sm">
+                      <li>Storage: {plan.resources.storage}</li>
+                      <li>Build Minutes: {plan.resources.buildMinutes}</li>
+                      <li>Artifact Storage: {plan.resources.artifactStorage}</li>
+                      <li>Deployment: {plan.resources.deploymentInstances}</li>
+                    </ul>
+                  </div>
+
+                  <div>
+                    <h4 className="font-semibold mb-2">Features</h4>
+                    <ul className="space-y-2">
+                      {plan.features.map((feature, index) => (
+                        <li key={index} className="flex items-start space-x-2 text-sm">
+                          <Check className="h-4 w-4 text-green-500 mt-0.5" />
+                          <span>{feature}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div>
+                    <h4 className="font-semibold mb-2">Overages</h4>
+                    <ul className="space-y-2 text-sm">
+                      <li>Storage: {plan.overages.storage}</li>
+                      <li>Build Minutes: {plan.overages.buildMinutes}</li>
+                      <li>Artifact Storage: {plan.overages.artifactStorage}</li>
+                      <li>Deployment: {plan.overages.deploymentInstances}</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <Button
+                  className="w-full mt-4"
+                  variant={currentPlan.toLowerCase() === plan.name.toLowerCase() ? 'secondary' : 'default'}
+                  onClick={() => handleUpgrade(plan)}
+                  disabled={currentPlan.toLowerCase() === plan.name.toLowerCase()}
+                >
+                  {currentPlan.toLowerCase() === plan.name.toLowerCase()
+                    ? 'Current Plan'
+                    : getPlanActionText(currentPlan, plan.name)}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {selectedPlan && (
+        <UpgradeDialog
+          isOpen={true}
+          onClose={() => setSelectedPlan(null)}
+          planName={selectedPlan.name}
+          planPrice={selectedPlan.price}
+        />
+      )}
+    </>
   );
 }; 

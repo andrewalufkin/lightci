@@ -31,6 +31,41 @@ import { GripVertical, Terminal } from 'lucide-react';
 import { Textarea } from '@/components/ui/textarea';
 import { api } from '@/services/api';
 
+interface BlueGreenConfig {
+  productionPort: number;
+  stagingPort: number;
+  healthCheckPath: string;
+  healthCheckTimeout: number;
+  rollbackOnFailure: boolean;
+}
+
+interface DeploymentConfig {
+  enabled: boolean;
+  platform: 'aws' | 'gcp' | 'azure' | 'kubernetes' | 'custom';
+  strategy: 'standard' | 'blue-green';
+  config: {
+    // Common fields
+    region?: string;
+    service?: string;
+    cluster?: string;
+    namespace?: string;
+    credentials?: string;
+    customSettings?: Record<string, string>;
+    // Blue/Green deployment fields
+    blueGreenConfig?: BlueGreenConfig;
+    // AWS EC2 specific fields
+    awsRegion?: string; // For backward compatibility
+    awsAccessKeyId?: string;
+    awsSecretAccessKey?: string;
+    ec2InstanceId?: string;
+    ec2DeployPath?: string;
+    ec2SshKey?: string;
+    ec2Username?: string;
+    // Environment variables
+    environmentVariables?: Record<string, string>;
+  };
+}
+
 interface PipelineStep {
   id: string;
   name: string;
@@ -40,6 +75,94 @@ interface PipelineStep {
   automatic?: boolean;
   runOnDeployedInstance?: boolean;
 }
+
+const defaultSteps: PipelineStep[] = [
+  {
+    id: 'source',
+    name: 'Source',
+    description: 'Clone and prepare source code',
+    command: 'git clone $REPO_URL .',
+    type: 'source',
+  }
+];
+
+const templateSteps: Record<string, PipelineStep[]> = {
+  nodejs: [
+    {
+      id: 'build',
+      name: 'Build',
+      description: 'Compile and package application',
+      command: 'npm install ts-node --save-dev && npm install && npm run build',
+      type: 'build',
+    },
+    {
+      id: 'test',
+      name: 'Test',
+      description: 'Run test suite',
+      command: 'npm test',
+      type: 'test',
+    },
+    {
+      id: 'deployment',
+      name: 'Deployment',
+      description: 'Deploy application to target environment',
+      command: 'pkill -f "node.*src/server.js" || true && npm install && npm start',
+      type: 'deploy',
+      automatic: true,
+      runOnDeployedInstance: true,
+    },
+  ],
+  rust: [
+    {
+      id: 'build',
+      name: 'Build',
+      description: 'Compile Rust project',
+      command: 'cargo build --release',
+      type: 'build',
+    },
+    {
+      id: 'test',
+      name: 'Test',
+      description: 'Run test suite',
+      command: 'cargo test',
+      type: 'test',
+    },
+    {
+      id: 'deployment',
+      name: 'Deployment',
+      description: 'Deploy application to target environment',
+      command: './target/release/app',
+      type: 'deploy',
+      automatic: true,
+      runOnDeployedInstance: true,
+    },
+  ],
+  docker: [
+    {
+      id: 'build',
+      name: 'Build',
+      description: 'Build Docker image',
+      command: 'docker build -t $IMAGE_NAME .',
+      type: 'build',
+    },
+    {
+      id: 'test',
+      name: 'Test',
+      description: 'Run container tests',
+      command: 'docker run --rm $IMAGE_NAME test',
+      type: 'test',
+    },
+    {
+      id: 'deployment',
+      name: 'Deployment',
+      description: 'Deploy application to target environment',
+      command: 'docker run -d -p 8080:8080 $IMAGE_NAME',
+      type: 'deploy',
+      automatic: true,
+      runOnDeployedInstance: true,
+    },
+  ],
+};
 
 interface ArtifactPattern {
   pattern: string;
@@ -69,30 +192,6 @@ interface ArtifactConfig {
   patterns: ArtifactPattern[];
   storage: ArtifactStorage;
   retention: ArtifactRetention;
-}
-
-interface DeploymentConfig {
-  enabled: boolean;
-  platform: 'aws' | 'gcp' | 'azure' | 'kubernetes' | 'custom';
-  config: {
-    // Common fields
-    region?: string;
-    service?: string;
-    cluster?: string;
-    namespace?: string;
-    credentials?: string;
-    customSettings?: Record<string, string>;
-    // AWS EC2 specific fields
-    awsRegion?: string; // For backward compatibility
-    awsAccessKeyId?: string;
-    awsSecretAccessKey?: string;
-    ec2InstanceId?: string;
-    ec2DeployPath?: string;
-    ec2SshKey?: string;
-    ec2Username?: string;
-    // Environment variables
-    environmentVariables?: Record<string, string>;
-  };
 }
 
 interface PipelineFormData {
@@ -162,6 +261,8 @@ interface PipelineApiPayload {
     ec2SshKey?: string;
     ec2Username?: string;
     environmentVariables?: Record<string, string>;
+    deploymentStrategy: DeploymentConfig['strategy'];
+    blueGreenConfig?: BlueGreenConfig;
   };
 }
 
@@ -171,94 +272,6 @@ interface StepFormData {
   command: string;
   type: 'source' | 'build' | 'test' | 'deploy' | 'custom';
 }
-
-const defaultSteps: PipelineStep[] = [
-  {
-    id: 'source',
-    name: 'Source',
-    description: 'Clone and prepare source code',
-    command: 'git clone $REPO_URL .',
-    type: 'source',
-  }
-];
-
-const templateSteps: Record<string, PipelineStep[]> = {
-  nodejs: [
-    {
-      id: 'build',
-      name: 'Build',
-      description: 'Compile and package application',
-      command: 'npm install ts-node --save-dev && npm install && npm run build',
-      type: 'build',
-    },
-    {
-      id: 'test',
-      name: 'Test',
-      description: 'Run test suite',
-      command: 'npm test',
-      type: 'test',
-    },
-    {
-      id: 'deployment',
-      name: 'Deployment',
-      description: 'Deploy application to target environment',
-      command: 'pkill -f "node.*src/server.js" || true && npm install && npm start',  // Kill any existing process, install dependencies and start app
-      type: 'deploy',
-      automatic: true,
-      runOnDeployedInstance: true,  // Ensure this runs on the deployed instance
-    },
-  ],
-  rust: [
-    {
-      id: 'build',
-      name: 'Build',
-      description: 'Compile Rust project',
-      command: 'cargo build --release',
-      type: 'build',
-    },
-    {
-      id: 'test',
-      name: 'Test',
-      description: 'Run test suite',
-      command: 'cargo test',
-      type: 'test',
-    },
-    {
-      id: 'deployment',
-      name: 'Deployment',
-      description: 'Deploy application to target environment',
-      command: './target/release/app',  // Start the application as part of deployment
-      type: 'deploy',
-      automatic: true,
-      runOnDeployedInstance: true,
-    },
-  ],
-  docker: [
-    {
-      id: 'build',
-      name: 'Build',
-      description: 'Build Docker image',
-      command: 'docker build -t $IMAGE_NAME .',
-      type: 'build',
-    },
-    {
-      id: 'test',
-      name: 'Test',
-      description: 'Run container tests',
-      command: 'docker run --rm $IMAGE_NAME test',
-      type: 'test',
-    },
-    {
-      id: 'deployment',
-      name: 'Deployment',
-      description: 'Deploy application to target environment',
-      command: 'docker run -d -p 8080:8080 $IMAGE_NAME',  // Start container as part of deployment
-      type: 'deploy',
-      automatic: true,
-      runOnDeployedInstance: true,
-    },
-  ],
-};
 
 const defaultArtifactPatterns: Record<string, ArtifactPattern[]> = {
   nodejs: [
@@ -495,13 +508,21 @@ const PipelineCreationForm = () => {
     deployment: {
       enabled: false,
       platform: 'aws',
+      strategy: 'standard',
       config: {
         region: '',
         service: '',
         cluster: '',
         namespace: '',
         credentials: '',
-        customSettings: {}
+        customSettings: {},
+        blueGreenConfig: {
+          productionPort: 8080,
+          stagingPort: 8081,
+          healthCheckPath: '/health',
+          healthCheckTimeout: 30,
+          rollbackOnFailure: false
+        }
       }
     }
   });
@@ -684,39 +705,58 @@ const PipelineCreationForm = () => {
   };
 
   const transformFormToApiPayload = (): PipelineApiPayload => {
-    const envVars = formData.environmentVariables.reduce(
-      (acc, { key, value }) => ({ ...acc, [key]: value }),
-      {} as Record<string, string>
-    );
-
-    const events: ('push' | 'pull_request')[] = [];
-    if (formData.triggers.onPush) events.push('push');
-    if (formData.triggers.onPullRequest) events.push('pull_request');
+    const {
+      name,
+      description,
+      repositoryUrl,
+      branch,
+      steps,
+      triggers,
+      githubToken,
+      artifacts,
+      deployment
+    } = formData;
 
     return {
-      name: formData.name,
-      repository: formData.repositoryUrl,
-      description: formData.description,
-      defaultBranch: formData.branch,
-      steps: formData.steps.map(step => ({
+      name,
+      repository: repositoryUrl,
+      description,
+      defaultBranch: branch,
+      steps: steps.map(step => ({
         name: step.name,
         command: step.command,
-        environment: envVars,
-        runLocation: step.runOnDeployedInstance ? 'deployed' : 'local'
+        runLocation: step.runOnDeployedInstance ? 'deployed_instance' : 'pipeline',
       })),
-      triggers: events.length > 0 ? {
-        events,
-        branches: [formData.branch]
-      } : undefined,
-      githubToken: formData.triggers.onPush ? formData.githubToken : undefined,
-      artifactsEnabled: formData.artifacts.enabled,
-      artifactPatterns: formData.artifacts.patterns.map(p => p.pattern),
-      artifactRetentionDays: formData.artifacts.retention.defaultDays,
-      artifactStorageType: formData.artifacts.storage.type === 'aws_s3' ? 's3' : 'local',
-      artifactStorageConfig: formData.artifacts.storage.config,
-      deploymentEnabled: formData.deployment.enabled,
-      deploymentPlatform: formData.deployment.platform,
-      deploymentConfig: formData.deployment.config
+      triggers: {
+        branches: [branch],
+        events: [
+          ...(triggers.onPush ? ['push'] : []),
+          ...(triggers.onPullRequest ? ['pull_request'] : [])
+        ] as ('push' | 'pull_request')[],
+      },
+      githubToken,
+      artifactsEnabled: artifacts.enabled,
+      artifactPatterns: artifacts.patterns.map(p => p.pattern),
+      artifactRetentionDays: artifacts.retention.defaultDays,
+      artifactStorageType: artifacts.storage.type === 'aws_s3' ? 's3' : 'local',
+      artifactStorageConfig: {
+        bucketName: artifacts.storage.config.bucketName,
+        region: artifacts.storage.config.region,
+        credentialsId: artifacts.storage.config.credentialsId,
+      },
+      deploymentEnabled: deployment.enabled,
+      deploymentPlatform: deployment.platform,
+      deploymentConfig: {
+        ...deployment.config,
+        deploymentStrategy: deployment.strategy,
+        blueGreenConfig: deployment.strategy === 'blue-green' ? {
+          productionPort: deployment.config.blueGreenConfig?.productionPort ?? 8080,
+          stagingPort: deployment.config.blueGreenConfig?.stagingPort ?? 8081,
+          healthCheckPath: deployment.config.blueGreenConfig?.healthCheckPath ?? '/health',
+          healthCheckTimeout: deployment.config.blueGreenConfig?.healthCheckTimeout ?? 30,
+          rollbackOnFailure: deployment.config.blueGreenConfig?.rollbackOnFailure ?? false
+        } : undefined
+      }
     };
   };
 
@@ -795,23 +835,38 @@ const PipelineCreationForm = () => {
     }
   };
 
-  const handleDeploymentConfigChange = (field: keyof DeploymentConfig['config'], value: string) => {
-    setFormData(prev => {
-      const newConfig = {
-        ...prev.deployment.config,
-        [field]: value
-      };
-
-      // We no longer need to change the platform when selecting EC2 service
-      // Just update the config with the new service value
-      return {
-        ...prev,
-        deployment: {
-          ...prev.deployment,
-          config: newConfig
+  const handleDeploymentConfigChange = (field: keyof DeploymentConfig['config'], value: any) => {
+    setFormData(prev => ({
+      ...prev,
+      deployment: {
+        ...prev.deployment,
+        config: {
+          ...prev.deployment.config,
+          [field]: value
         }
-      };
-    });
+      }
+    }));
+  };
+
+  const handleBlueGreenConfigChange = (field: keyof BlueGreenConfig, value: BlueGreenConfig[keyof BlueGreenConfig]) => {
+    setFormData(prev => ({
+      ...prev,
+      deployment: {
+        ...prev.deployment,
+        config: {
+          ...prev.deployment.config,
+          blueGreenConfig: {
+            productionPort: prev.deployment.config.blueGreenConfig?.productionPort ?? 8080,
+            stagingPort: prev.deployment.config.blueGreenConfig?.stagingPort ?? 8081,
+            healthCheckPath: prev.deployment.config.blueGreenConfig?.healthCheckPath ?? '/health',
+            healthCheckTimeout: prev.deployment.config.blueGreenConfig?.healthCheckTimeout ?? 30,
+            rollbackOnFailure: prev.deployment.config.blueGreenConfig?.rollbackOnFailure ?? false,
+            ...prev.deployment.config.blueGreenConfig,
+            [field]: value
+          }
+        }
+      }
+    }));
   };
 
   const handleAddPattern = (pattern: string) => {
@@ -1336,6 +1391,89 @@ const PipelineCreationForm = () => {
                     <Separator />
                     
                     <div className="space-y-4">
+                      <div>
+                        <Label>Deployment Strategy</Label>
+                        <Select
+                          value={formData.deployment.strategy}
+                          onValueChange={(value: DeploymentConfig['strategy']) => 
+                            handleDeploymentChange('strategy', value)}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select deployment strategy" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="standard">
+                              Standard Deployment
+                              <p className="text-sm text-muted-foreground">
+                                Traditional deployment with direct updates to the production environment
+                              </p>
+                            </SelectItem>
+                            <SelectItem value="blue-green">
+                              Blue/Green Deployment
+                              <p className="text-sm text-muted-foreground">
+                                Zero-downtime deployment using two identical environments for safer releases
+                              </p>
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {formData.deployment.strategy === 'blue-green' && (
+                        <div className="space-y-4 border rounded-lg p-4">
+                          <h3 className="text-lg font-medium">Blue/Green Configuration</h3>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <Label>Production Port</Label>
+                              <Input
+                                type="number"
+                                value={formData.deployment.config.blueGreenConfig?.productionPort || 8080}
+                                onChange={(e) => handleBlueGreenConfigChange('productionPort', parseInt(e.target.value))}
+                                placeholder="8080"
+                              />
+                            </div>
+                            <div>
+                              <Label>Staging Port</Label>
+                              <Input
+                                type="number"
+                                value={formData.deployment.config.blueGreenConfig?.stagingPort || 8081}
+                                onChange={(e) => handleBlueGreenConfigChange('stagingPort', parseInt(e.target.value))}
+                                placeholder="8081"
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <Label>Health Check Path</Label>
+                            <Input
+                              value={formData.deployment.config.blueGreenConfig?.healthCheckPath || '/health'}
+                              onChange={(e) => handleBlueGreenConfigChange('healthCheckPath', e.target.value)}
+                              placeholder="/health"
+                            />
+                            <p className="text-sm text-muted-foreground mt-1">
+                              Endpoint path to verify application health before switching traffic
+                            </p>
+                          </div>
+                          <div>
+                            <Label>Health Check Timeout (seconds)</Label>
+                            <Input
+                              type="number"
+                              value={formData.deployment.config.blueGreenConfig?.healthCheckTimeout || 30}
+                              onChange={(e) => handleBlueGreenConfigChange('healthCheckTimeout', parseInt(e.target.value))}
+                              placeholder="30"
+                            />
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <Switch
+                              id="rollback"
+                              checked={formData.deployment.config.blueGreenConfig?.rollbackOnFailure || false}
+                              onCheckedChange={(checked) => handleBlueGreenConfigChange('rollbackOnFailure', checked)}
+                            />
+                            <Label htmlFor="rollback">Automatic Rollback on Failure</Label>
+                          </div>
+                        </div>
+                      )}
+
+                      <Separator />
+
                       <div>
                         <Label>Deployment Platform</Label>
                         <Select
