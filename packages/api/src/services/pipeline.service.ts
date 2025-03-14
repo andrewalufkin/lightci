@@ -6,9 +6,8 @@ import { DatabasePipeline } from './database.service.js';
 import { EngineService } from './engine.service.js';
 import { GitHubService } from '../services/github.service.js';
 import { SchedulerService } from './scheduler.service.js';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
-import { Prisma } from '@prisma/client';
 import { ValidationError, NotFoundError } from '../utils/errors.js';
 import { v4 as crypto } from 'uuid';
 
@@ -30,14 +29,9 @@ export class PipelineService {
   }
 
   private transformToModelPipeline(dbPipeline: any): Pipeline {
-    console.log('[PipelineService] Raw steps data:', dbPipeline.steps);
-    console.log('[PipelineService] Steps data type:', typeof dbPipeline.steps);
-    
     const steps = typeof dbPipeline.steps === 'string' 
       ? JSON.parse(dbPipeline.steps) 
       : (Array.isArray(dbPipeline.steps) ? dbPipeline.steps : []);
-    
-    console.log('[PipelineService] Transformed steps:', steps);
     
     return {
       id: dbPipeline.id,
@@ -57,6 +51,7 @@ export class PipelineService {
       artifactStorageType: dbPipeline.artifactStorageType || 'local',
       artifactStorageConfig: dbPipeline.artifactStorageConfig ? (typeof dbPipeline.artifactStorageConfig === 'string' ? JSON.parse(dbPipeline.artifactStorageConfig) : dbPipeline.artifactStorageConfig) : {},
       deploymentEnabled: dbPipeline.deploymentEnabled || false,
+      deploymentMode: dbPipeline.deploymentMode || 'automatic',
       deploymentPlatform: dbPipeline.deploymentPlatform,
       deploymentConfig: dbPipeline.deploymentConfig ? (typeof dbPipeline.deploymentConfig === 'string' ? JSON.parse(dbPipeline.deploymentConfig) : dbPipeline.deploymentConfig) : {},
       createdAt: dbPipeline.createdAt,
@@ -173,6 +168,7 @@ export class PipelineService {
       
       // Deployment configuration
       deploymentEnabled: config.deploymentEnabled ?? false,
+      deploymentMode: config.deploymentMode || 'automatic',
       deploymentPlatform: config.deploymentPlatform,
       deploymentConfig: config.deploymentConfig || {}
     };
@@ -184,20 +180,25 @@ export class PipelineService {
         repository: pipelineData.repository,
         description: pipelineData.description,
         defaultBranch: pipelineData.defaultBranch,
-        createdById: pipelineData.createdById,
+        createdBy: {
+          connect: {
+            id: pipelineData.createdById
+          }
+        },
         steps: JSON.stringify(pipelineData.steps),
         triggers: JSON.stringify(pipelineData.triggers),
         webhookConfig: JSON.stringify(pipelineData.webhookConfig),
-        status: pipelineData.status,
+        status: pipelineData.status as Prisma.PipelineCreateInput['status'],
         artifactsEnabled: pipelineData.artifactsEnabled,
         artifactPatterns: JSON.stringify(pipelineData.artifactPatterns),
         artifactRetentionDays: pipelineData.artifactRetentionDays,
         artifactStorageType: pipelineData.artifactStorageType,
         artifactStorageConfig: JSON.stringify(pipelineData.artifactStorageConfig),
         deploymentEnabled: pipelineData.deploymentEnabled,
+        deploymentMode: pipelineData.deploymentMode || 'automatic',
         deploymentPlatform: pipelineData.deploymentPlatform || null,
         deploymentConfig: JSON.stringify(pipelineData.deploymentConfig)
-      }
+      } satisfies Prisma.PipelineCreateInput
     });
 
     // Set up schedule if needed
@@ -248,6 +249,7 @@ export class PipelineService {
     
     // Update deployment configuration if provided
     if (config.deploymentEnabled !== undefined) updateData.deploymentEnabled = config.deploymentEnabled;
+    if (config.deploymentMode !== undefined) updateData.deploymentMode = config.deploymentMode;
     if (config.deploymentPlatform !== undefined) updateData.deploymentPlatform = config.deploymentPlatform;
     if (config.deploymentConfig !== undefined) updateData.deploymentConfig = JSON.stringify(config.deploymentConfig);
 
@@ -272,6 +274,12 @@ export class PipelineService {
     }
 
     try {
+      // Delete all associated pipeline runs first
+      await this.prismaClient.pipelineRun.deleteMany({
+        where: { pipelineId: id }
+      });
+
+      // Then delete the pipeline
       await this.prismaClient.pipeline.delete({
         where: { id }
       });
@@ -326,6 +334,7 @@ export class PipelineService {
         artifactStorageType: pipeline.artifactStorageType,
         artifactStorageConfig: pipeline.artifactStorageConfig,
         deploymentEnabled: pipeline.deploymentEnabled,
+        deploymentMode: pipeline.deploymentMode || 'automatic',
         deploymentPlatform: pipeline.deploymentPlatform || undefined,
         deploymentConfig: pipeline.deploymentConfig,
         createdById: pipeline.createdById
@@ -375,6 +384,7 @@ export class PipelineService {
           artifactStorageType: matchingPipeline.artifactStorageType,
           artifactStorageConfig: matchingPipeline.artifactStorageConfig,
           deploymentEnabled: matchingPipeline.deploymentEnabled,
+          deploymentMode: matchingPipeline.deploymentMode || 'automatic',
           deploymentPlatform: matchingPipeline.deploymentPlatform || undefined,
           deploymentConfig: matchingPipeline.deploymentConfig,
           createdById: matchingPipeline.createdById

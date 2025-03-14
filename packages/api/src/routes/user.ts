@@ -18,6 +18,7 @@ interface BillingUsage {
   currentMonth: {
     build_minutes: number;
     storage_gb: number;
+    deployment_hours: number;
   }
 }
 

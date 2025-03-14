@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { prisma } from '../lib/prisma.js';
+import { prisma } from '../db.js';
 import { BillingService } from './billing.service.js';
 
 /**
@@ -77,6 +77,4 @@ export class PipelinePreflightService {
       pipeline
     };
   }
-}
-
-export const pipelinePreflightService = new PipelinePreflightService(); 
+} 

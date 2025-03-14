@@ -9,6 +9,7 @@ interface BillingUsage {
   currentMonth: {
     build_minutes: number;
     storage_gb: number;
+    deployment_hours: number;
   }
 }
 
@@ -107,7 +108,7 @@ export default function BillingPage() {
       </Card>
 
       {/* Usage Overview */}
-      <div className="grid gap-6 md:grid-cols-2">
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
         {/* Build Minutes */}
         <Card>
           <CardHeader>
@@ -151,6 +152,29 @@ export default function BillingPage() {
               />
               <p className="text-sm text-gray-500">
                 {((storageLimits?.remainingMB ?? 0) / 1024).toFixed(2)} GB remaining
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Deployment Hours */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Deployment Hours</CardTitle>
+            <CardDescription>Instance runtime usage</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-500">Used</span>
+                <span className="font-semibold">{usage?.currentMonth.deployment_hours || 0} hours</span>
+              </div>
+              <Progress 
+                value={Math.min((usage?.currentMonth.deployment_hours || 0) / (storageLimits?.tier === 'basic' ? 20 : storageLimits?.tier === 'professional' ? 80 : 200) * 100, 100)} 
+                className="h-2"
+              />
+              <p className="text-sm text-gray-500">
+                {(storageLimits?.tier === 'basic' ? 20 : storageLimits?.tier === 'professional' ? 80 : 200) - (usage?.currentMonth.deployment_hours || 0)} hours remaining this month
               </p>
             </div>
           </CardContent>

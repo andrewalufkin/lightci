@@ -1,5 +1,5 @@
 generator client {
-  provider        = "prisma-client-js"
+  provider = "prisma-client-js"
 }
 
 datasource db {
@@ -26,6 +26,7 @@ model Pipeline {
   artifactsEnabled      Boolean       @default(true) @map("artifacts_enabled")
   deploymentConfig      Json?         @default("{}") @map("deployment_config")
   deploymentEnabled     Boolean       @default(false) @map("deployment_enabled")
+  deploymentMode        String        @default("automatic") @map("deployment_mode")
   deploymentPlatform    String?       @map("deployment_platform")
   webhookConfig         Json?         @default("{}") @map("webhook_config")
   createdById           String?       @map("created_by")
@@ -33,6 +34,7 @@ model Pipeline {
   runs                  PipelineRun[]
   createdBy             User?         @relation("CreatedBy", fields: [createdById], references: [id])
   project               Project?      @relation(fields: [projectId], references: [id])
+  autoDeployments       AutoDeployment[]
 
   @@map("pipelines")
 }
@@ -98,6 +100,7 @@ model User {
   repository_connections RepositoryConnection[]
   usageRecords           UsageRecord[]
   projects               UserProject[]
+  autoDeployments        AutoDeployment[]
 
   @@map("users")
 }
@@ -249,4 +252,20 @@ model UsageRecord {
   users           User?         @relation(fields: [user_id], references: [id])
 
   @@map("usage_records")
+}
+
+model AutoDeployment {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  instanceId String   @map("instance_id")
+  status     String   @default("active")
+  type       String   // Instance type (e.g., t2.micro, t2.medium)
+  region     String
+  createdAt  DateTime @default(now()) @map("created_at")
+  metadata   Json?    @default("{}")
+  user       User     @relation(fields: [userId], references: [id])
+  pipelineId String?  @map("pipeline_id")
+  pipeline   Pipeline? @relation(fields: [pipelineId], references: [id])
+
+  @@map("auto_deployments")
 }

@@ -420,4 +420,128 @@ export class BillingService {
       throw error;
     }
   }
+
+  /**
+   * Track deployment hours when a new instance is provisioned
+   * @param deploymentId The ID of the deployment
+   * @returns The created usage record
+   */
+  async trackDeploymentStart(deploymentId: string): Promise<any> {
+    try {
+      return await this.prismaClient.$transaction(async (tx: any) => {
+        // Get the deployment details
+        const deployment = await tx.autoDeployment.findUnique({
+          where: { id: deploymentId },
+          include: {
+            user: true
+          }
+        });
+
+        if (!deployment) {
+          throw new Error(`AutoDeployment with ID ${deploymentId} not found`);
+        }
+
+        // Create usage record for deployment start
+        const usageRecordId = crypto.randomUUID();
+        const usageRecord = await tx.usageRecord.create({
+          data: {
+            id: usageRecordId,
+            user_id: deployment.userId,
+            usage_type: 'deployment_hours',
+            quantity: 0, // Initial quantity is 0, will be updated when deployment ends
+            metadata: {
+              deployment_id: deploymentId,
+              instance_id: deployment.instanceId,
+              instance_type: deployment.type,
+              action: 'started',
+              start_time: deployment.createdAt.toISOString()
+            },
+            timestamp: deployment.createdAt
+          }
+        });
+
+        return { id: usageRecordId };
+      });
+    } catch (error) {
+      console.error('[BillingService] Error tracking deployment start:', error);
+      if (error instanceof Error) {
+        throw new Error(`Error tracking deployment start: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Track deployment hours when an instance is terminated
+   * @param deploymentId The ID of the deployment
+   * @returns The created usage record
+   */
+  async trackDeploymentEnd(deploymentId: string): Promise<any> {
+    try {
+      return await this.prismaClient.$transaction(async (tx: any) => {
+        // Get the deployment details
+        const deployment = await tx.autoDeployment.findUnique({
+          where: { id: deploymentId },
+          include: {
+            user: true
+          }
+        });
+
+        if (!deployment) {
+          throw new Error(`AutoDeployment with ID ${deploymentId} not found`);
+        }
+
+        // Get the start usage record
+        const startRecord = await tx.usageRecord.findFirst({
+          where: {
+            usage_type: 'deployment_hours',
+            metadata: {
+              path: ['deployment_id'],
+              equals: deploymentId
+            }
+          }
+        });
+
+        if (!startRecord) {
+          throw new Error(`No start record found for deployment ${deploymentId}`);
+        }
+
+        // Calculate duration in hours
+        const startTime = deployment.createdAt;
+        const endTime = new Date();
+        const durationHours = Math.ceil((endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60));
+
+        // Create usage record for deployment end
+        const usageRecordId = crypto.randomUUID();
+        const usageRecord = await tx.usageRecord.create({
+          data: {
+            id: usageRecordId,
+            user_id: deployment.userId,
+            usage_type: 'deployment_hours',
+            quantity: durationHours,
+            metadata: {
+              deployment_id: deploymentId,
+              instance_id: deployment.instanceId,
+              instance_type: deployment.type,
+              action: 'ended',
+              start_time: startTime.toISOString(),
+              end_time: endTime.toISOString()
+            },
+            timestamp: endTime
+          }
+        });
+
+        // Update the user's usage history
+        await this.updateUserUsageHistory(deployment.userId, 'deployment_hours', durationHours, tx);
+
+        return { id: usageRecordId, quantity: durationHours };
+      });
+    } catch (error) {
+      console.error('[BillingService] Error tracking deployment end:', error);
+      if (error instanceof Error) {
+        throw new Error(`Error tracking deployment end: ${error.message}`);
+      }
+      throw error;
+    }
+  }
 } 

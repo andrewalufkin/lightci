@@ -15,6 +15,7 @@ import { prisma } from '../lib/prisma.js';
 import { Step } from '../models/Step.js';
 import { BillingService } from './billing.service.js';
 import { PipelinePreflightService } from './pipeline-preflight.service.js';
+import { EngineService } from './engine.service.js';
 
 const execAsync = promisify(exec);
 
@@ -60,14 +61,26 @@ interface PipelineStepResult extends Step {
 
 export class PipelineRunnerService {
   private activeTimeouts: NodeJS.Timeout[] = [];
-  private activeExecutions: Set<string> = new Set();
+  private activeExecutions: Set<string>;
+  private workspaceService: WorkspaceService;
+  private prismaClient: PrismaClient;
   private billingService: BillingService;
+  private engineService: EngineService;
+  private deploymentService: DeploymentService;
+  private preflightService: PipelinePreflightService;
 
   constructor(
-    private workspaceService: WorkspaceService,
-    private prismaClient: PrismaClient = prisma // Default to the global instance
+    prismaClient: PrismaClient = prisma,
+    engineService: EngineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001'),
+    workspaceService: WorkspaceService = new WorkspaceService()
   ) {
+    this.prismaClient = prismaClient;
+    this.engineService = engineService;
+    this.workspaceService = workspaceService;
+    this.activeExecutions = new Set();
     this.billingService = new BillingService(prismaClient);
+    this.preflightService = new PipelinePreflightService(prismaClient, this.billingService);
+    this.deploymentService = new DeploymentService(engineService);
   }
 
   private async executeCommand(command: string, workingDir: string, env: Record<string, string> = {}): Promise<{ output: string; error?: string }> {
@@ -146,10 +159,9 @@ export class PipelineRunnerService {
     }
   }
 
-  async runPipeline(pipelineId: string, branch: string, userId: string, commit?: string): Promise<string> {
+  async runPipeline(pipelineId: string, branch: string, userId: string, commit?: string, existingRunId?: string): Promise<string> {
     // Perform pre-flight checks first
-    const preflightService = new PipelinePreflightService(this.prismaClient);
-    const preflightResult = await preflightService.performChecks(pipelineId);
+    const preflightResult = await this.preflightService.performChecks(pipelineId);
     
     // If pre-flight checks fail, throw an error
     if (!preflightResult.canRun) {
@@ -209,19 +221,33 @@ export class PipelineRunnerService {
       };
     });
 
-    // Create pipeline run
-    const pipelineRun = await this.prismaClient.pipelineRun.create({
-      data: {
-        pipeline: {
-          connect: { id: pipelineId }
-        },
-        branch,
-        commit,
-        status: 'running',
-        stepResults: JSON.stringify(stepResults),
-        logs: []
-      }
-    });
+    let pipelineRun;
+    if (existingRunId) {
+      // Update existing run with step results
+      pipelineRun = await this.prismaClient.pipelineRun.update({
+        where: { id: existingRunId },
+        data: {
+          stepResults: JSON.stringify(stepResults),
+          status: 'running'
+        }
+      });
+      console.log(`[PipelineRunner] Updated existing pipeline run ${existingRunId} with step results`);
+    } else {
+      // Create new pipeline run
+      pipelineRun = await this.prismaClient.pipelineRun.create({
+        data: {
+          pipeline: {
+            connect: { id: pipelineId }
+          },
+          branch,
+          commit,
+          status: 'running',
+          stepResults: JSON.stringify(stepResults),
+          logs: []
+        }
+      });
+      console.log(`[PipelineRunner] Created new pipeline run ${pipelineRun.id}`);
+    }
 
     // Update pipeline status to running
     await this.prismaClient.pipeline.update({
@@ -292,7 +318,7 @@ export class PipelineRunnerService {
     
     console.log(`[PipelineRunner] Deployment configuration:`, deployConfig);
 
-    const deploymentService = new DeploymentService();
+    const deploymentService = new DeploymentService(this.engineService);
     console.log(`[PipelineRunner] Created deployment service instance`);
     
     const deployResult = await deploymentService.deployPipelineRun(runId, deployConfig);
@@ -315,6 +341,7 @@ export class PipelineRunnerService {
     let workspace: Workspace | undefined;
     let deploymentCompleted = false;
     let timeoutId: NodeJS.Timeout | undefined;
+    let deployedInstanceConfig: DeploymentConfig | undefined;
 
     try {
       console.log(`[PipelineRunner] Starting pipeline execution for run ${runId} in directory ${process.cwd()}`);
@@ -413,12 +440,84 @@ export class PipelineRunnerService {
             console.log(`[PipelineRunner] Executing command for step ${step.name}:`, {
               runId,
               command,
-              workingDir: workspacePath
+              workingDir: workspacePath,
+              runLocation: step.runLocation
             });
 
             let result: ExecutionResult | undefined;
             try {
-              result = await this.executeCommand(command, workspacePath, step.environment || {});
+              // If step should run on deployed instance
+              if (step.runLocation === 'deployed_instance') {
+                // Collect artifacts before deployment if they haven't been collected yet
+                if (!deploymentCompleted && workspacePath) {
+                  try {
+                    await this.collectArtifacts(pipeline, runId, workspacePath);
+                  } catch (error) {
+                    console.error(`[PipelineRunner] Error collecting artifacts before deployment:`, error);
+                    throw error;
+                  }
+                }
+
+                // If deployment hasn't completed yet, trigger it
+                if (!deploymentCompleted) {
+                  console.log(`[PipelineRunner] Step requires deployed instance, triggering deployment...`);
+                  const deploymentService = new DeploymentService(this.engineService);
+                  
+                  // Create deployment config from pipeline configuration
+                  const deploymentConfig: DeploymentConfig = {
+                    platform: pipeline.deploymentMode === 'automatic' ? 'aws' : (pipeline.deploymentPlatform || 'custom'),
+                    config: {
+                      ...(pipeline.deploymentConfig as Record<string, any> || {}),
+                      ...(pipeline.deploymentMode === 'automatic' ? {
+                        service: 'ec2',
+                        region: process.env.AWS_DEFAULT_REGION || 'us-east-1',
+                        instanceType: 't2.micro',
+                        runLocation: 'deployed_instance',
+                        securityGroupIds: [process.env.AWS_SECURITY_GROUP_ID],
+                        subnetId: process.env.AWS_SUBNET_ID
+                      } : {})
+                    },
+                    mode: pipeline.deploymentMode || 'automatic',
+                    awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID,
+                    awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+                    region: process.env.AWS_DEFAULT_REGION || 'us-east-1'
+                  };
+
+                  const deployResult = await deploymentService.deployPipelineRun(runId, deploymentConfig);
+                  if (!deployResult.success) {
+                    throw new Error(`Deployment failed: ${deployResult.message}`);
+                  }
+                  deploymentCompleted = true;
+                  deployedInstanceConfig = deploymentConfig;
+                }
+
+                // Execute command on deployed instance
+                if (!deployedInstanceConfig) {
+                  throw new Error('Deployment configuration not available');
+                }
+                result = await this.executeOnDeployedInstance(command, deployedInstanceConfig, step.environment || {});
+              } else {
+                // Execute locally
+                result = await this.executeCommand(command, workspacePath, step.environment || {});
+              }
+
+              // Update step status to completed
+              stepResult.status = 'completed';
+              stepResult.endTime = new Date();
+              stepResult.output = result.output;
+
+              await this.prismaClient.pipelineRun.update({
+                where: { id: runId },
+                data: {
+                  stepResults: JSON.stringify(stepResults)
+                }
+              });
+
+              console.log(`[PipelineRunner] Step ${step.name} completed successfully:`, {
+                runId,
+                stepId: step.id,
+                output: result.output?.substring(0, 100) + '...'
+              });
             } catch (error: unknown) {
               console.error(`[PipelineRunner] Step ${step.name} failed:`, {
                 runId,
@@ -439,10 +538,7 @@ export class PipelineRunnerService {
                 }
               });
 
-              console.log(`[PipelineRunner] Step ${step.name} marked as completed:`, {
-                runId,
-                stepId: step.id
-              });
+              throw error;
             }
           }
 
@@ -712,15 +808,15 @@ export class PipelineRunnerService {
       // Parse config if it's a string
       const config = typeof deploymentConfig === 'string' 
         ? JSON.parse(deploymentConfig) 
-        : deploymentConfig.config; // Use the config property from DeploymentConfig
+        : deploymentConfig; // Use deploymentConfig directly, not config property
       
-      if (!config.awsAccessKeyId || !config.awsSecretAccessKey || !config.awsRegion) {
+      if (!config.awsAccessKeyId || !config.awsSecretAccessKey || !config.region) {
         throw new Error('Missing required AWS credentials');
       }
 
       // Create new EC2 client with credentials
       const ec2Client = new EC2Client({
-        region: config.awsRegion,
+        region: config.region,
         credentials: {
           accessKeyId: config.awsAccessKeyId,
           secretAccessKey: config.awsSecretAccessKey

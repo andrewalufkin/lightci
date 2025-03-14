@@ -3,12 +3,14 @@ import { DeploymentService, DeploymentResult, DeploymentConfig } from '../servic
 import { NotFoundError } from '../utils/errors.js';
 import { prisma } from '../db.js';
 import { RequestWithParams } from '../types/express.js';
+import { EngineService } from '../services/engine.service.js';
 
 export class DeploymentController {
   private deploymentService: DeploymentService;
   
   constructor() {
-    this.deploymentService = new DeploymentService();
+    const engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
+    this.deploymentService = new DeploymentService(engineService);
   }
   
   /**
@@ -51,11 +53,33 @@ export class DeploymentController {
         });
         return;
       }
+
+      // Check if deployment mode is manual and this is an automatic trigger
+      const isAutomaticTrigger = req.query.trigger === 'automatic';
+      if (run.pipeline.deploymentMode === 'manual' && isAutomaticTrigger) {
+        (res as any).status(400).json({
+          error: 'Cannot automatically deploy when manual deployment mode is enabled',
+          pipeline: run.pipelineId
+        });
+        return;
+      }
       
       // Create deployment config from pipeline configuration
       const deploymentConfig: DeploymentConfig = {
-        platform: run.pipeline.deploymentPlatform || 'custom',
-        config: run.pipeline.deploymentConfig as Record<string, any> || {},
+        platform: run.pipeline.deploymentMode === 'automatic' ? 'aws' : (run.pipeline.deploymentPlatform || 'custom'),
+        config: {
+          ...(run.pipeline.deploymentConfig as Record<string, any> || {}),
+          ...(run.pipeline.deploymentMode === 'automatic' ? {
+            service: 'ec2',
+            region: process.env.AWS_DEFAULT_REGION || 'us-east-1',
+            instanceType: 't2.micro', // Default instance type for automatic deployment
+            runLocation: 'deployed_instance'
+          } : {})
+        },
+        mode: run.pipeline.deploymentMode || 'automatic',
+        awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        region: process.env.AWS_DEFAULT_REGION || 'us-east-1'
       };
       
       // Trigger deployment in the background
@@ -66,7 +90,8 @@ export class DeploymentController {
         message: 'Deployment triggered',
         runId,
         pipelineId: run.pipelineId,
-        platform: run.pipeline.deploymentPlatform
+        platform: run.pipeline.deploymentPlatform,
+        mode: run.pipeline.deploymentMode || 'automatic'
       });
       
       // Wait for deployment to complete and log results (but don't block the response)

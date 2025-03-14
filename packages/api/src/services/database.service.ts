@@ -30,6 +30,7 @@ export interface DatabasePipeline {
   artifactStorageType: string;
   artifactStorageConfig?: any;
   deploymentEnabled: boolean;
+  deploymentMode: string;
   deploymentPlatform?: string;
   deploymentConfig?: any;
   createdById: string;
@@ -56,6 +57,7 @@ export class DatabaseService {
       artifactStorageType: dbPipeline.artifactStorageType,
       artifactStorageConfig: dbPipeline.artifactStorageConfig,
       deploymentEnabled: dbPipeline.deploymentEnabled,
+      deploymentMode: dbPipeline.deploymentMode,
       deploymentPlatform: dbPipeline.deploymentPlatform,
       deploymentConfig: dbPipeline.deploymentConfig,
       createdById: dbPipeline.createdById
@@ -131,6 +133,7 @@ export class DatabaseService {
         
         // Deployment configuration
         deploymentEnabled: pipeline.deploymentEnabled ?? false,
+        deploymentMode: pipeline.deploymentMode,
         deploymentPlatform: pipeline.deploymentPlatform,
         deploymentConfig: pipeline.deploymentConfig ? JSON.stringify(pipeline.deploymentConfig) : JSON.stringify({}),
         
@@ -162,6 +165,7 @@ export class DatabaseService {
         
         // Deployment configuration
         ...(pipeline.deploymentEnabled !== undefined && { deploymentEnabled: pipeline.deploymentEnabled }),
+        ...(pipeline.deploymentMode !== undefined && { deploymentMode: pipeline.deploymentMode }),
         ...(pipeline.deploymentPlatform !== undefined && { deploymentPlatform: pipeline.deploymentPlatform }),
         ...(pipeline.deploymentConfig !== undefined && { deploymentConfig: JSON.stringify(pipeline.deploymentConfig) })
       }

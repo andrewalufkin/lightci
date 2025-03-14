@@ -5,4 +5,7 @@ export interface RequestWithParams extends Request {
     runId: string;
     [key: string]: string;
   };
+  query: {
+    [key: string]: string | undefined;
+  };
 } 

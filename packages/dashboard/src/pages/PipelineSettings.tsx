@@ -55,6 +55,7 @@ interface Pipeline {
   artifactStorageType: string;
   artifactStorageConfig: Record<string, any>;
   deploymentEnabled: boolean;
+  deploymentMode?: 'automatic' | 'manual';
   deploymentPlatform?: string;
   deploymentConfig?: Record<string, any>;
 }
@@ -813,7 +814,8 @@ const PipelineSettings: React.FC = () => {
                     if (pipeline) {
                       handleUpdatePipeline({
                         ...pipeline,
-                        deploymentEnabled: checked
+                        deploymentEnabled: checked,
+                        deploymentMode: checked ? 'automatic' : undefined
                       });
                     }
                   }}
@@ -823,339 +825,376 @@ const PipelineSettings: React.FC = () => {
               {pipeline?.deploymentEnabled && (
                 <>
                   <div className="space-y-2">
-                    <Label>Deployment Platform</Label>
+                    <Label>Deployment Mode</Label>
                     <Select
-                      value={pipeline.deploymentPlatform || 'aws'}
-                      onValueChange={(value) => {
+                      value={pipeline.deploymentMode || 'automatic'}
+                      onValueChange={(value: 'automatic' | 'manual') => {
                         if (pipeline) {
                           handleUpdatePipeline({
                             ...pipeline,
-                            deploymentPlatform: value,
-                            deploymentConfig: {}
+                            deploymentMode: value
                           });
                         }
                       }}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="Select deployment platform" />
+                        <SelectValue placeholder="Select deployment mode" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="aws">AWS</SelectItem>
-                        <SelectItem value="gcp">Google Cloud Platform</SelectItem>
-                        <SelectItem value="azure">Azure</SelectItem>
-                        <SelectItem value="kubernetes">Kubernetes</SelectItem>
-                        <SelectItem value="custom">Custom</SelectItem>
+                        <SelectItem value="automatic">
+                          <div className="flex flex-col">
+                            <span>Automatic Deployment</span>
+                            <span className="text-sm text-muted-foreground">Deploy automatically after successful pipeline run</span>
+                          </div>
+                        </SelectItem>
+                        <SelectItem value="manual">
+                          <div className="flex flex-col">
+                            <span>Manual Deployment</span>
+                            <span className="text-sm text-muted-foreground">Configure deployment settings manually</span>
+                          </div>
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
-                  
-                  <div className="space-y-4 border rounded-lg p-4">
-                    <h4 className="font-medium">Deployment Configuration</h4>
-                    
-                    {pipeline.deploymentPlatform === 'aws' && (
-                      <>
-                        <div className="space-y-2">
-                          <Label>AWS Region</Label>
-                          <Input
-                            value={pipeline.deploymentConfig?.region || ''}
-                            onChange={(e) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    region: e.target.value
-                                  }
-                                });
-                              }
-                            }}
-                            placeholder="us-east-1"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>AWS Service</Label>
-                          <Select
-                            value={pipeline.deploymentConfig?.service || 'lambda'}
-                            onValueChange={(value) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    service: value
-                                  }
-                                });
-                              }
-                            }}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select AWS service" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="lambda">Lambda</SelectItem>
-                              <SelectItem value="ecs">ECS</SelectItem>
-                              <SelectItem value="ec2">EC2</SelectItem>
-                              <SelectItem value="s3">S3 Static Website</SelectItem>
-                              <SelectItem value="elasticbeanstalk">Elastic Beanstalk</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Credentials ID</Label>
-                          <Input
-                            value={pipeline.deploymentConfig?.credentials || ''}
-                            onChange={(e) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    credentials: e.target.value
-                                  }
-                                });
-                              }
-                            }}
-                            placeholder="aws-credentials"
-                          />
-                        </div>
-                      </>
-                    )}
-                    
-                    {pipeline.deploymentPlatform === 'gcp' && (
-                      <>
-                        <div className="space-y-2">
-                          <Label>GCP Region</Label>
-                          <Input
-                            value={pipeline.deploymentConfig?.region || ''}
-                            onChange={(e) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    region: e.target.value
-                                  }
-                                });
-                              }
-                            }}
-                            placeholder="us-central1"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>GCP Service</Label>
-                          <Select
-                            value={pipeline.deploymentConfig?.service || 'cloudfunctions'}
-                            onValueChange={(value) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    service: value
-                                  }
-                                });
-                              }
-                            }}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select GCP service" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="cloudfunctions">Cloud Functions</SelectItem>
-                              <SelectItem value="cloudrun">Cloud Run</SelectItem>
-                              <SelectItem value="gke">GKE</SelectItem>
-                              <SelectItem value="appengine">App Engine</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Credentials ID</Label>
-                          <Input
-                            value={pipeline.deploymentConfig?.credentials || ''}
-                            onChange={(e) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    credentials: e.target.value
-                                  }
-                                });
-                              }
-                            }}
-                            placeholder="gcp-credentials"
-                          />
-                        </div>
-                      </>
-                    )}
-                    
-                    {pipeline.deploymentPlatform === 'azure' && (
-                      <>
-                        <div className="space-y-2">
-                          <Label>Azure Region</Label>
-                          <Input
-                            value={pipeline.deploymentConfig?.region || ''}
-                            onChange={(e) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    region: e.target.value
-                                  }
-                                });
-                              }
-                            }}
-                            placeholder="eastus"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Azure Service</Label>
-                          <Select
-                            value={pipeline.deploymentConfig?.service || 'functions'}
-                            onValueChange={(value) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    service: value
-                                  }
-                                });
-                              }
-                            }}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select Azure service" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="functions">Azure Functions</SelectItem>
-                              <SelectItem value="appservice">App Service</SelectItem>
-                              <SelectItem value="aks">AKS</SelectItem>
-                              <SelectItem value="containerinstances">Container Instances</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Credentials ID</Label>
-                          <Input
-                            value={pipeline.deploymentConfig?.credentials || ''}
-                            onChange={(e) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    credentials: e.target.value
-                                  }
-                                });
-                              }
-                            }}
-                            placeholder="azure-credentials"
-                          />
-                        </div>
-                      </>
-                    )}
-                    
-                    {pipeline.deploymentPlatform === 'kubernetes' && (
-                      <>
-                        <div className="space-y-2">
-                          <Label>Kubernetes Cluster</Label>
-                          <Input
-                            value={pipeline.deploymentConfig?.cluster || ''}
-                            onChange={(e) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    cluster: e.target.value
-                                  }
-                                });
-                              }
-                            }}
-                            placeholder="my-cluster"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Namespace</Label>
-                          <Input
-                            value={pipeline.deploymentConfig?.namespace || ''}
-                            onChange={(e) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    namespace: e.target.value
-                                  }
-                                });
-                              }
-                            }}
-                            placeholder="default"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Credentials ID</Label>
-                          <Input
-                            value={pipeline.deploymentConfig?.credentials || ''}
-                            onChange={(e) => {
-                              if (pipeline) {
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    credentials: e.target.value
-                                  }
-                                });
-                              }
-                            }}
-                            placeholder="kubeconfig"
-                          />
-                        </div>
-                      </>
-                    )}
-                    
-                    {pipeline.deploymentPlatform === 'custom' && (
-                      <div className="space-y-4">
-                        <div className="space-y-2">
-                          <Label>Custom Configuration</Label>
-                          <div className="text-sm text-muted-foreground mb-2">
-                            Define custom deployment settings as key-value pairs. These will be available as environment variables in your deployment step.
-                          </div>
-                          <Textarea
-                            value={Object.entries(pipeline.deploymentConfig?.customSettings || {})
-                              .map(([key, value]) => `${key}=${value}`)
-                              .join('\n')}
-                            onChange={(e) => {
-                              if (pipeline) {
-                                const customSettings = e.target.value
-                                  .split('\n')
-                                  .filter(line => line.includes('='))
-                                  .reduce((acc, line) => {
-                                    const [key, value] = line.split('=');
-                                    if (key && value) {
-                                      acc[key.trim()] = value.trim();
-                                    }
-                                    return acc;
-                                  }, {} as Record<string, string>);
-                                
-                                handleUpdatePipeline({
-                                  ...pipeline,
-                                  deploymentConfig: {
-                                    ...pipeline.deploymentConfig,
-                                    customSettings
-                                  }
-                                });
-                              }
-                            }}
-                            placeholder="KEY=value (one per line)&#10;Example:&#10;DEPLOY_TARGET=production&#10;USE_CDN=true"
-                            className="font-mono min-h-[120px]"
-                          />
-                        </div>
+
+                  {pipeline.deploymentMode === 'manual' && (
+                    <>
+                      <div className="space-y-2">
+                        <Label>Deployment Platform</Label>
+                        <Select
+                          value={pipeline.deploymentPlatform || 'aws'}
+                          onValueChange={(value) => {
+                            if (pipeline) {
+                              handleUpdatePipeline({
+                                ...pipeline,
+                                deploymentPlatform: value,
+                                deploymentConfig: {}
+                              });
+                            }
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select deployment platform" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="aws">AWS</SelectItem>
+                            <SelectItem value="gcp">Google Cloud Platform</SelectItem>
+                            <SelectItem value="azure">Azure</SelectItem>
+                            <SelectItem value="kubernetes">Kubernetes</SelectItem>
+                            <SelectItem value="custom">Custom</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
-                    )}
-                  </div>
+                      
+                      <div className="space-y-4 border rounded-lg p-4">
+                        <h4 className="font-medium">Deployment Configuration</h4>
+                        
+                        {pipeline.deploymentPlatform === 'aws' && (
+                          <>
+                            <div className="space-y-2">
+                              <Label>AWS Region</Label>
+                              <Input
+                                value={pipeline.deploymentConfig?.region || ''}
+                                onChange={(e) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        region: e.target.value
+                                      }
+                                    });
+                                  }
+                                }}
+                                placeholder="us-east-1"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>AWS Service</Label>
+                              <Select
+                                value={pipeline.deploymentConfig?.service || 'lambda'}
+                                onValueChange={(value) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        service: value
+                                      }
+                                    });
+                                  }
+                                }}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select AWS service" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="lambda">Lambda</SelectItem>
+                                  <SelectItem value="ecs">ECS</SelectItem>
+                                  <SelectItem value="ec2">EC2</SelectItem>
+                                  <SelectItem value="s3">S3 Static Website</SelectItem>
+                                  <SelectItem value="elasticbeanstalk">Elastic Beanstalk</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Credentials ID</Label>
+                              <Input
+                                value={pipeline.deploymentConfig?.credentials || ''}
+                                onChange={(e) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        credentials: e.target.value
+                                      }
+                                    });
+                                  }
+                                }}
+                                placeholder="aws-credentials"
+                              />
+                            </div>
+                          </>
+                        )}
+                        
+                        {pipeline.deploymentPlatform === 'gcp' && (
+                          <>
+                            <div className="space-y-2">
+                              <Label>GCP Region</Label>
+                              <Input
+                                value={pipeline.deploymentConfig?.region || ''}
+                                onChange={(e) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        region: e.target.value
+                                      }
+                                    });
+                                  }
+                                }}
+                                placeholder="us-central1"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>GCP Service</Label>
+                              <Select
+                                value={pipeline.deploymentConfig?.service || 'cloudfunctions'}
+                                onValueChange={(value) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        service: value
+                                      }
+                                    });
+                                  }
+                                }}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select GCP service" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="cloudfunctions">Cloud Functions</SelectItem>
+                                  <SelectItem value="cloudrun">Cloud Run</SelectItem>
+                                  <SelectItem value="gke">GKE</SelectItem>
+                                  <SelectItem value="appengine">App Engine</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Credentials ID</Label>
+                              <Input
+                                value={pipeline.deploymentConfig?.credentials || ''}
+                                onChange={(e) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        credentials: e.target.value
+                                      }
+                                    });
+                                  }
+                                }}
+                                placeholder="gcp-credentials"
+                              />
+                            </div>
+                          </>
+                        )}
+                        
+                        {pipeline.deploymentPlatform === 'azure' && (
+                          <>
+                            <div className="space-y-2">
+                              <Label>Azure Region</Label>
+                              <Input
+                                value={pipeline.deploymentConfig?.region || ''}
+                                onChange={(e) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        region: e.target.value
+                                      }
+                                    });
+                                  }
+                                }}
+                                placeholder="eastus"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Azure Service</Label>
+                              <Select
+                                value={pipeline.deploymentConfig?.service || 'functions'}
+                                onValueChange={(value) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        service: value
+                                      }
+                                    });
+                                  }
+                                }}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select Azure service" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="functions">Azure Functions</SelectItem>
+                                  <SelectItem value="appservice">App Service</SelectItem>
+                                  <SelectItem value="aks">AKS</SelectItem>
+                                  <SelectItem value="containerinstances">Container Instances</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Credentials ID</Label>
+                              <Input
+                                value={pipeline.deploymentConfig?.credentials || ''}
+                                onChange={(e) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        credentials: e.target.value
+                                      }
+                                    });
+                                  }
+                                }}
+                                placeholder="azure-credentials"
+                              />
+                            </div>
+                          </>
+                        )}
+                        
+                        {pipeline.deploymentPlatform === 'kubernetes' && (
+                          <>
+                            <div className="space-y-2">
+                              <Label>Kubernetes Cluster</Label>
+                              <Input
+                                value={pipeline.deploymentConfig?.cluster || ''}
+                                onChange={(e) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        cluster: e.target.value
+                                      }
+                                    });
+                                  }
+                                }}
+                                placeholder="my-cluster"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Namespace</Label>
+                              <Input
+                                value={pipeline.deploymentConfig?.namespace || ''}
+                                onChange={(e) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        namespace: e.target.value
+                                      }
+                                    });
+                                  }
+                                }}
+                                placeholder="default"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Credentials ID</Label>
+                              <Input
+                                value={pipeline.deploymentConfig?.credentials || ''}
+                                onChange={(e) => {
+                                  if (pipeline) {
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        credentials: e.target.value
+                                      }
+                                    });
+                                  }
+                                }}
+                                placeholder="kubeconfig"
+                              />
+                            </div>
+                          </>
+                        )}
+                        
+                        {pipeline.deploymentPlatform === 'custom' && (
+                          <div className="space-y-4">
+                            <div className="space-y-2">
+                              <Label>Custom Configuration</Label>
+                              <div className="text-sm text-muted-foreground mb-2">
+                                Define custom deployment settings as key-value pairs. These will be available as environment variables in your deployment step.
+                              </div>
+                              <Textarea
+                                value={Object.entries(pipeline.deploymentConfig?.customSettings || {})
+                                  .map(([key, value]) => `${key}=${value}`)
+                                  .join('\n')}
+                                onChange={(e) => {
+                                  if (pipeline) {
+                                    const customSettings = e.target.value
+                                      .split('\n')
+                                      .filter(line => line.includes('='))
+                                      .reduce((acc, line) => {
+                                        const [key, value] = line.split('=');
+                                        if (key && value) {
+                                          acc[key.trim()] = value.trim();
+                                        }
+                                        return acc;
+                                      }, {} as Record<string, string>);
+                                    
+                                    handleUpdatePipeline({
+                                      ...pipeline,
+                                      deploymentConfig: {
+                                        ...pipeline.deploymentConfig,
+                                        customSettings
+                                      }
+                                    });
+                                  }
+                                }}
+                                placeholder="KEY=value (one per line)&#10;Example:&#10;DEPLOY_TARGET=production&#10;USE_CDN=true"
+                                className="font-mono min-h-[120px]"
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </>
               )}
             </CardContent>

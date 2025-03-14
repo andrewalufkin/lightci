@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import type { Request, Response } from 'express-serve-static-core';
 import Stripe from 'stripe';
 import { z } from 'zod';
 import { PrismaClient } from '@prisma/client';
@@ -23,7 +24,7 @@ const createPaymentSchema = z.object({
   plan: z.string()
 });
 
-router.post('/create-payment-intent', async (req, res) => {
+router.post('/create-payment-intent', async (req: Request, res: Response) => {
   try {
     const { amount, currency, description, userId, plan } = createPaymentSchema.parse(req.body);
     
@@ -43,7 +44,8 @@ router.post('/create-payment-intent', async (req, res) => {
     res.json({ clientSecret: paymentIntent.client_secret });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return res.status(400).json({ error: error.errors });
+      res.status(400).json({ error: error.errors });
+      return;
     }
     console.error('Stripe payment intent error:', error);
     res.status(500).json({ error: 'Failed to create payment intent' });
@@ -56,33 +58,33 @@ if (!process.env.STRIPE_WEBHOOK_SECRET) {
 }
 
 // Webhook handler
-router.post('/webhook', async (req, res) => {
-  const sig = req.headers['stripe-signature'];
+router.post('/webhook', async (req: Request, res: Response) => {
+  const sig = req.headers['stripe-signature'] as string | undefined;
 
   if (!sig) {
-    return res.status(400).json({ error: 'No signature header' });
+    res.status(400).json({ error: 'No signature header' });
+    return;
   }
 
   try {
     const event = stripe.webhooks.constructEvent(
-      req.body,
+      req.body as any,
       sig,
-      process.env.STRIPE_WEBHOOK_SECRET
+      process.env.STRIPE_WEBHOOK_SECRET ?? ''
     );
 
-    // Handle the event
     switch (event.type) {
-      case 'payment_intent.succeeded':
-        const paymentIntent = event.data.object;
-        // Update user's subscription status
+      case 'payment_intent.succeeded': {
+        const paymentIntent = event.data.object as Stripe.PaymentIntent;
         await handleSuccessfulPayment(paymentIntent);
         break;
+      }
       
-      case 'payment_intent.payment_failed':
-        const failedPayment = event.data.object;
-        // Handle failed payment
-        await handleFailedPayment(failedPayment);
+      case 'payment_intent.payment_failed': {
+        const paymentIntent = event.data.object as Stripe.PaymentIntent;
+        await handleFailedPayment(paymentIntent);
         break;
+      }
 
       default:
         console.log(`Unhandled event type ${event.type}`);
@@ -91,7 +93,7 @@ router.post('/webhook', async (req, res) => {
     res.json({ received: true });
   } catch (err) {
     console.error('Webhook error:', err);
-    return res.status(400).json({ error: 'Webhook error' });
+    res.status(400).json({ error: 'Webhook error' });
   }
 });
 

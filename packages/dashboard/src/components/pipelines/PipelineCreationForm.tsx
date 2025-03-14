@@ -43,6 +43,7 @@ interface DeploymentConfig {
   enabled: boolean;
   platform: 'aws' | 'gcp' | 'azure' | 'kubernetes' | 'custom';
   strategy: 'standard' | 'blue-green';
+  mode: 'automatic' | 'manual';
   config: {
     // Common fields
     region?: string;
@@ -106,7 +107,7 @@ const templateSteps: Record<string, PipelineStep[]> = {
       id: 'deployment',
       name: 'Deployment',
       description: 'Deploy application to target environment',
-      command: 'pkill -f "node.*src/server.js" || true && npm install && npm start',
+      command: 'npm install -g pm2 && pkill -f "node.*src/server.js" || true && npm install && pm2 delete all || true && pm2 start npm --name "app" -- start && pm2 save',
       type: 'deploy',
       automatic: true,
       runOnDeployedInstance: true,
@@ -244,6 +245,7 @@ interface PipelineApiPayload {
   };
   deploymentEnabled: boolean;
   deploymentPlatform?: 'aws' | 'gcp' | 'azure' | 'kubernetes' | 'custom';
+  deploymentMode: 'automatic' | 'manual';
   deploymentConfig?: {
     // Common fields
     region?: string;
@@ -509,6 +511,7 @@ const PipelineCreationForm = () => {
       enabled: false,
       platform: 'aws',
       strategy: 'standard',
+      mode: 'automatic',
       config: {
         region: '',
         service: '',
@@ -746,6 +749,7 @@ const PipelineCreationForm = () => {
       },
       deploymentEnabled: deployment.enabled,
       deploymentPlatform: deployment.platform,
+      deploymentMode: deployment.mode,
       deploymentConfig: {
         ...deployment.config,
         deploymentStrategy: deployment.strategy,
@@ -1367,7 +1371,6 @@ const PipelineCreationForm = () => {
               </CardContent>
             </Card>
           </TabsContent>
-
           <TabsContent value="deployment" className="space-y-4">
             <Card>
               <CardHeader>
@@ -1392,362 +1395,423 @@ const PipelineCreationForm = () => {
                     
                     <div className="space-y-4">
                       <div>
-                        <Label>Deployment Strategy</Label>
+                        <Label>Deployment Mode</Label>
                         <Select
-                          value={formData.deployment.strategy}
-                          onValueChange={(value: DeploymentConfig['strategy']) => 
-                            handleDeploymentChange('strategy', value)}
+                          value={formData.deployment.mode || 'automatic'}
+                          onValueChange={(value: 'automatic' | 'manual') => 
+                            handleDeploymentChange('mode', value)}
                         >
                           <SelectTrigger>
-                            <SelectValue placeholder="Select deployment strategy" />
+                            <SelectValue>
+                              {formData.deployment.mode === 'automatic' ? 'Automatic Deployment' : 'Manual Deployment'}
+                            </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="standard">
-                              Standard Deployment
-                              <p className="text-sm text-muted-foreground">
-                                Traditional deployment with direct updates to the production environment
-                              </p>
+                            <SelectItem value="automatic">
+                              <div className="flex flex-col">
+                                <div>Automatic Deployment</div>
+                                <span className="font-normal text-sm text-muted-foreground">
+                                  Deploy automatically after successful pipeline run
+                                </span>
+                              </div>
                             </SelectItem>
-                            <SelectItem value="blue-green">
-                              Blue/Green Deployment
-                              <p className="text-sm text-muted-foreground">
-                                Zero-downtime deployment using two identical environments for safer releases
-                              </p>
+                            <SelectItem value="manual">
+                              <div className="flex flex-col">
+                                <div>Manual Deployment</div>
+                                <span className="font-normal text-sm text-muted-foreground">
+                                  Configure deployment settings manually
+                                </span>
+                              </div>
                             </SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
 
-                      {formData.deployment.strategy === 'blue-green' && (
-                        <div className="space-y-4 border rounded-lg p-4">
-                          <h3 className="text-lg font-medium">Blue/Green Configuration</h3>
-                          <div className="grid grid-cols-2 gap-4">
-                            <div>
-                              <Label>Production Port</Label>
-                              <Input
-                                type="number"
-                                value={formData.deployment.config.blueGreenConfig?.productionPort || 8080}
-                                onChange={(e) => handleBlueGreenConfigChange('productionPort', parseInt(e.target.value))}
-                                placeholder="8080"
-                              />
-                            </div>
-                            <div>
-                              <Label>Staging Port</Label>
-                              <Input
-                                type="number"
-                                value={formData.deployment.config.blueGreenConfig?.stagingPort || 8081}
-                                onChange={(e) => handleBlueGreenConfigChange('stagingPort', parseInt(e.target.value))}
-                                placeholder="8081"
-                              />
-                            </div>
-                          </div>
+                      {/* Only show manual configuration if mode is manual */}
+                      {formData.deployment.mode === 'manual' && (
+                        <>
                           <div>
-                            <Label>Health Check Path</Label>
-                            <Input
-                              value={formData.deployment.config.blueGreenConfig?.healthCheckPath || '/health'}
-                              onChange={(e) => handleBlueGreenConfigChange('healthCheckPath', e.target.value)}
-                              placeholder="/health"
-                            />
-                            <p className="text-sm text-muted-foreground mt-1">
-                              Endpoint path to verify application health before switching traffic
-                            </p>
-                          </div>
-                          <div>
-                            <Label>Health Check Timeout (seconds)</Label>
-                            <Input
-                              type="number"
-                              value={formData.deployment.config.blueGreenConfig?.healthCheckTimeout || 30}
-                              onChange={(e) => handleBlueGreenConfigChange('healthCheckTimeout', parseInt(e.target.value))}
-                              placeholder="30"
-                            />
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <Switch
-                              id="rollback"
-                              checked={formData.deployment.config.blueGreenConfig?.rollbackOnFailure || false}
-                              onCheckedChange={(checked) => handleBlueGreenConfigChange('rollbackOnFailure', checked)}
-                            />
-                            <Label htmlFor="rollback">Automatic Rollback on Failure</Label>
-                          </div>
-                        </div>
-                      )}
-
-                      <Separator />
-
-                      <div>
-                        <Label>Deployment Platform</Label>
-                        <Select
-                          value={formData.deployment.platform}
-                          onValueChange={(value: DeploymentConfig['platform']) => 
-                            handleDeploymentChange('platform', value)}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select deployment platform" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="aws">AWS</SelectItem>
-                            <SelectItem value="gcp">Google Cloud Platform</SelectItem>
-                            <SelectItem value="azure">Azure</SelectItem>
-                            <SelectItem value="kubernetes">Kubernetes</SelectItem>
-                            <SelectItem value="custom">Custom</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <Separator />
-
-                      {formData.deployment.platform === 'aws' && (
-                        <div className="space-y-4">
-                          <div>
-                            <Label>AWS Region</Label>
-                            <Input
-                              value={formData.deployment.config.region || ''}
-                              onChange={(e) => handleDeploymentConfigChange('region', e.target.value)}
-                              placeholder="us-east-1"
-                            />
-                          </div>
-                          <div>
-                            <Label>AWS Service</Label>
-                            <Select 
-                              value={formData.deployment.config.service || 'lambda'}
-                              onValueChange={(value) => handleDeploymentConfigChange('service', value)}
+                            <Label>Deployment Strategy</Label>
+                            <Select
+                              value={formData.deployment.strategy}
+                              onValueChange={(value: DeploymentConfig['strategy']) => 
+                                handleDeploymentChange('strategy', value)}
                             >
                               <SelectTrigger>
-                                <SelectValue placeholder="Select AWS service" />
+                                <SelectValue>
+                                  {formData.deployment.strategy === 'standard' ? 'Standard Deployment' : 'Blue/Green Deployment'}
+                                </SelectValue>
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="lambda">Lambda</SelectItem>
-                                <SelectItem value="ecs">ECS</SelectItem>
-                                <SelectItem value="ec2">EC2</SelectItem>
-                                <SelectItem value="s3">S3 Static Website</SelectItem>
-                                <SelectItem value="elasticbeanstalk">Elastic Beanstalk</SelectItem>
+                                <SelectItem value="standard">
+                                  <div className="flex flex-col">
+                                    <div>Standard Deployment</div>
+                                    <span className="font-normal text-sm text-muted-foreground">
+                                      Traditional deployment with direct updates to the production environment
+                                    </span>
+                                  </div>
+                                </SelectItem>
+                                <SelectItem value="blue-green">
+                                  <div className="flex flex-col">
+                                    <div>Blue/Green Deployment</div>
+                                    <span className="font-normal text-sm text-muted-foreground">
+                                      Zero-downtime deployment using two identical environments for safer releases
+                                    </span>
+                                  </div>
+                                </SelectItem>
                               </SelectContent>
                             </Select>
                           </div>
 
-                          {formData.deployment.config.service === 'ec2' && (
-                            <>
-                              <div>
-                                <Label>AWS Access Key ID</Label>
-                                <Input
-                                  type="password"
-                                  value={formData.deployment.config.awsAccessKeyId || ''}
-                                  onChange={(e) => handleDeploymentConfigChange('awsAccessKeyId', e.target.value)}
-                                  placeholder="AWS Access Key ID"
-                                />
-                              </div>
-                              <div>
-                                <Label>AWS Secret Access Key</Label>
-                                <Input
-                                  type="password"
-                                  value={formData.deployment.config.awsSecretAccessKey || ''}
-                                  onChange={(e) => handleDeploymentConfigChange('awsSecretAccessKey', e.target.value)}
-                                  placeholder="AWS Secret Access Key"
-                                />
-                              </div>
-                              <div>
-                                <Label>EC2 Instance ID</Label>
-                                <Input
-                                  value={formData.deployment.config.ec2InstanceId || ''}
-                                  onChange={(e) => handleDeploymentConfigChange('ec2InstanceId', e.target.value)}
-                                  placeholder="i-1234567890abcdef0"
-                                />
-                              </div>
-                              <div>
-                                <Label>EC2 Deploy Path</Label>
-                                <Input
-                                  value={formData.deployment.config.ec2DeployPath || ''}
-                                  onChange={(e) => handleDeploymentConfigChange('ec2DeployPath', e.target.value)}
-                                  placeholder="/home/ec2-user/app"
-                                />
-                                <p className="text-sm text-muted-foreground mt-1">
-                                  Path where the application will be deployed on the EC2 instance
-                                </p>
-                              </div>
-                              <div>
-                                <Label>EC2 SSH Key</Label>
-                                <div className="space-y-2">
-                                  <div className="flex flex-col gap-2">
-                                    <div className="flex items-center gap-2">
-                                      <Button 
-                                        type="button" 
-                                        variant="outline"
-                                        onClick={() => sshKeyFileInputRef.current?.click()}
-                                      >
-                                        Upload .pem File
-                                      </Button>
-                                      <input
-                                        type="file"
-                                        ref={sshKeyFileInputRef}
-                                        className="hidden"
-                                        accept=".pem"
-                                        onChange={handleFileUpload}
-                                      />
-                                      {sshKeyFileName ? (
-                                        <div className="flex items-center gap-2">
-                                          <span className="text-sm text-green-600">
-                                            {sshKeyFileName}
-                                          </span>
-                                          <Button 
-                                            type="button" 
-                                            variant="ghost" 
-                                            size="sm"
-                                            onClick={clearSshKeyFile}
-                                          >
-                                            <Trash2 className="h-4 w-4" />
-                                          </Button>
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                    <Textarea
-                                      value={formData.deployment.config.ec2SshKey || ''}
-                                      onChange={(e) => handleDeploymentConfigChange('ec2SshKey', e.target.value)}
-                                      placeholder="-----BEGIN RSA PRIVATE KEY-----"
-                                      rows={3}
-                                    />
-                                  </div>
-                                  <p className="text-sm text-muted-foreground">
-                                    Upload your .pem file or paste the private SSH key for connecting to the EC2 instance
-                                  </p>
+                          {formData.deployment.strategy === 'blue-green' && (
+                            <div className="space-y-4 border rounded-lg p-4">
+                              <h3 className="text-lg font-medium">Blue/Green Configuration</h3>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <Label>Production Port</Label>
+                                  <Input
+                                    type="number"
+                                    value={formData.deployment.config.blueGreenConfig?.productionPort || 8080}
+                                    onChange={(e) => handleBlueGreenConfigChange('productionPort', parseInt(e.target.value))}
+                                    placeholder="8080"
+                                  />
+                                </div>
+                                <div>
+                                  <Label>Staging Port</Label>
+                                  <Input
+                                    type="number"
+                                    value={formData.deployment.config.blueGreenConfig?.stagingPort || 8081}
+                                    onChange={(e) => handleBlueGreenConfigChange('stagingPort', parseInt(e.target.value))}
+                                    placeholder="8081"
+                                  />
                                 </div>
                               </div>
                               <div>
-                                <Label>EC2 Username</Label>
+                                <Label>Health Check Path</Label>
                                 <Input
-                                  value={formData.deployment.config.ec2Username || ''}
-                                  onChange={(e) => handleDeploymentConfigChange('ec2Username', e.target.value)}
-                                  placeholder="ec2-user"
+                                  value={formData.deployment.config.blueGreenConfig?.healthCheckPath || '/health'}
+                                  onChange={(e) => handleBlueGreenConfigChange('healthCheckPath', e.target.value)}
+                                  placeholder="/health"
                                 />
                                 <p className="text-sm text-muted-foreground mt-1">
-                                  Default username for the EC2 instance (e.g., ec2-user, ubuntu)
+                                  Endpoint path to verify application health before switching traffic
                                 </p>
                               </div>
-                            </>
+                              <div>
+                                <Label>Health Check Timeout (seconds)</Label>
+                                <Input
+                                  type="number"
+                                  value={formData.deployment.config.blueGreenConfig?.healthCheckTimeout || 30}
+                                  onChange={(e) => handleBlueGreenConfigChange('healthCheckTimeout', parseInt(e.target.value))}
+                                  placeholder="30"
+                                />
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <Switch
+                                  id="rollback"
+                                  checked={formData.deployment.config.blueGreenConfig?.rollbackOnFailure || false}
+                                  onCheckedChange={(checked) => handleBlueGreenConfigChange('rollbackOnFailure', checked)}
+                                />
+                                <Label htmlFor="rollback">Automatic Rollback on Failure</Label>
+                              </div>
+                            </div>
                           )}
 
-                          <div>
-                            <Label>Credentials ID</Label>
-                            <Input
-                              value={formData.deployment.config.credentials || ''}
-                              onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
-                              placeholder="aws-credentials"
-                            />
-                          </div>
-                        </div>
-                      )}
+                          <Separator />
 
-                      {formData.deployment.platform === 'gcp' && (
-                        <div className="space-y-4">
                           <div>
-                            <Label>GCP Region</Label>
-                            <Input
-                              value={formData.deployment.config.region || ''}
-                              onChange={(e) => handleDeploymentConfigChange('region', e.target.value)}
-                              placeholder="us-central1"
-                            />
-                          </div>
-                          <div>
-                            <Label>GCP Service</Label>
-                            <Select defaultValue="cloudfunctions">
+                            <Label>Deployment Platform</Label>
+                            <Select
+                              value={formData.deployment.platform}
+                              onValueChange={(value: DeploymentConfig['platform']) => 
+                                handleDeploymentChange('platform', value)}
+                            >
                               <SelectTrigger>
-                                <SelectValue placeholder="Select GCP service" />
+                                <SelectValue placeholder="Select deployment platform" />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="cloudfunctions">Cloud Functions</SelectItem>
-                                <SelectItem value="cloudrun">Cloud Run</SelectItem>
-                                <SelectItem value="gke">GKE</SelectItem>
-                                <SelectItem value="appengine">App Engine</SelectItem>
+                                <SelectItem value="aws">AWS</SelectItem>
+                                <SelectItem value="gcp">Google Cloud Platform</SelectItem>
+                                <SelectItem value="azure">Azure</SelectItem>
+                                <SelectItem value="kubernetes">Kubernetes</SelectItem>
+                                <SelectItem value="custom">Custom</SelectItem>
                               </SelectContent>
                             </Select>
                           </div>
-                          <div>
-                            <Label>Credentials ID</Label>
-                            <Input
-                              value={formData.deployment.config.credentials || ''}
-                              onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
-                              placeholder="gcp-credentials"
-                            />
-                          </div>
-                        </div>
-                      )}
 
-                      {formData.deployment.platform === 'azure' && (
-                        <div className="space-y-4">
-                          <div>
-                            <Label>Azure Region</Label>
-                            <Input
-                              value={formData.deployment.config.region || ''}
-                              onChange={(e) => handleDeploymentConfigChange('region', e.target.value)}
-                              placeholder="eastus"
-                            />
-                          </div>
-                          <div>
-                            <Label>Azure Service</Label>
-                            <Select defaultValue="functions">
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select Azure service" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="functions">Azure Functions</SelectItem>
-                                <SelectItem value="appservice">App Service</SelectItem>
-                                <SelectItem value="aks">AKS</SelectItem>
-                                <SelectItem value="containerinstances">Container Instances</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <div>
-                            <Label>Credentials ID</Label>
-                            <Input
-                              value={formData.deployment.config.credentials || ''}
-                              onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
-                              placeholder="azure-credentials"
-                            />
-                          </div>
-                        </div>
-                      )}
+                          <Separator />
 
-                      {formData.deployment.platform === 'kubernetes' && (
-                        <div className="space-y-4">
-                          <div>
-                            <Label>Kubernetes Cluster</Label>
-                            <Input
-                              value={formData.deployment.config.cluster || ''}
-                              onChange={(e) => handleDeploymentConfigChange('cluster', e.target.value)}
-                              placeholder="my-cluster"
-                            />
-                          </div>
-                          <div>
-                            <Label>Namespace</Label>
-                            <Input
-                              value={formData.deployment.config.namespace || ''}
-                              onChange={(e) => handleDeploymentConfigChange('namespace', e.target.value)}
-                              placeholder="default"
-                            />
-                          </div>
-                          <div>
-                            <Label>Credentials ID</Label>
-                            <Input
-                              value={formData.deployment.config.credentials || ''}
-                              onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
-                              placeholder="kubeconfig"
-                            />
-                          </div>
-                        </div>
-                      )}
-
-                      {formData.deployment.platform === 'custom' && (
-                        <div className="space-y-4">
-                          <div>
-                            <Label>Custom Deployment Configuration</Label>
-                            <p className="text-sm text-muted-foreground mb-2">
-                              Define your custom deployment settings. These will be available as environment variables in your deployment step.
-                            </p>
-                            <div className="space-y-2">
-                              <div className="flex gap-2">
-                                <Input placeholder="Key" />
-                                <Input placeholder="Value" />
-                                <Button type="button">Add</Button>
+                          {formData.deployment.platform === 'aws' && (
+                            <div className="space-y-4">
+                              <div>
+                                <Label>AWS Region</Label>
+                                <Input
+                                  value={formData.deployment.config.region || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('region', e.target.value)}
+                                  placeholder="us-east-1"
+                                />
                               </div>
+                              <div>
+                                <Label>AWS Service</Label>
+                                <Select 
+                                  value={formData.deployment.config.service || 'lambda'}
+                                  onValueChange={(value) => handleDeploymentConfigChange('service', value)}
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Select AWS service" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="lambda">Lambda</SelectItem>
+                                    <SelectItem value="ecs">ECS</SelectItem>
+                                    <SelectItem value="ec2">EC2</SelectItem>
+                                    <SelectItem value="s3">S3 Static Website</SelectItem>
+                                    <SelectItem value="elasticbeanstalk">Elastic Beanstalk</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+
+                              {formData.deployment.config.service === 'ec2' && (
+                                <>
+                                  <div>
+                                    <Label>AWS Access Key ID</Label>
+                                    <Input
+                                      type="password"
+                                      value={formData.deployment.config.awsAccessKeyId || ''}
+                                      onChange={(e) => handleDeploymentConfigChange('awsAccessKeyId', e.target.value)}
+                                      placeholder="AWS Access Key ID"
+                                    />
+                                  </div>
+                                  <div>
+                                    <Label>AWS Secret Access Key</Label>
+                                    <Input
+                                      type="password"
+                                      value={formData.deployment.config.awsSecretAccessKey || ''}
+                                      onChange={(e) => handleDeploymentConfigChange('awsSecretAccessKey', e.target.value)}
+                                      placeholder="AWS Secret Access Key"
+                                    />
+                                  </div>
+                                  <div>
+                                    <Label>EC2 Instance ID</Label>
+                                    <Input
+                                      value={formData.deployment.config.ec2InstanceId || ''}
+                                      onChange={(e) => handleDeploymentConfigChange('ec2InstanceId', e.target.value)}
+                                      placeholder="i-1234567890abcdef0"
+                                    />
+                                  </div>
+                                  <div>
+                                    <Label>EC2 Deploy Path</Label>
+                                    <Input
+                                      value={formData.deployment.config.ec2DeployPath || ''}
+                                      onChange={(e) => handleDeploymentConfigChange('ec2DeployPath', e.target.value)}
+                                      placeholder="/home/ec2-user/app"
+                                    />
+                                    <p className="text-sm text-muted-foreground mt-1">
+                                      Path where the application will be deployed on the EC2 instance
+                                    </p>
+                                  </div>
+                                  <div>
+                                    <Label>EC2 SSH Key</Label>
+                                    <div className="space-y-2">
+                                      <div className="flex flex-col gap-2">
+                                        <div className="flex items-center gap-2">
+                                          <Button 
+                                            type="button" 
+                                            variant="outline"
+                                            onClick={() => sshKeyFileInputRef.current?.click()}
+                                          >
+                                            Upload .pem File
+                                          </Button>
+                                          <input
+                                            type="file"
+                                            ref={sshKeyFileInputRef}
+                                            className="hidden"
+                                            accept=".pem"
+                                            onChange={handleFileUpload}
+                                          />
+                                          {sshKeyFileName ? (
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-sm text-green-600">
+                                                {sshKeyFileName}
+                                              </span>
+                                              <Button 
+                                                type="button" 
+                                                variant="ghost" 
+                                                size="sm"
+                                                onClick={clearSshKeyFile}
+                                              >
+                                                <Trash2 className="h-4 w-4" />
+                                              </Button>
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                        <Textarea
+                                          value={formData.deployment.config.ec2SshKey || ''}
+                                          onChange={(e) => handleDeploymentConfigChange('ec2SshKey', e.target.value)}
+                                          placeholder="-----BEGIN RSA PRIVATE KEY-----"
+                                          rows={3}
+                                        />
+                                      </div>
+                                      <p className="text-sm text-muted-foreground">
+                                        Upload your .pem file or paste the private SSH key for connecting to the EC2 instance
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <Label>EC2 Username</Label>
+                                    <Input
+                                      value={formData.deployment.config.ec2Username || ''}
+                                      onChange={(e) => handleDeploymentConfigChange('ec2Username', e.target.value)}
+                                      placeholder="ec2-user"
+                                    />
+                                    <p className="text-sm text-muted-foreground mt-1">
+                                      Default username for the EC2 instance (e.g., ec2-user, ubuntu)
+                                    </p>
+                                  </div>
+                                </>
+                              )}
+
+                              <div>
+                                <Label>Credentials ID</Label>
+                                <Input
+                                  value={formData.deployment.config.credentials || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
+                                  placeholder="aws-credentials"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {formData.deployment.platform === 'gcp' && (
+                            <div className="space-y-4">
+                              <div>
+                                <Label>GCP Region</Label>
+                                <Input
+                                  value={formData.deployment.config.region || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('region', e.target.value)}
+                                  placeholder="us-central1"
+                                />
+                              </div>
+                              <div>
+                                <Label>GCP Service</Label>
+                                <Select defaultValue="cloudfunctions">
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Select GCP service" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="cloudfunctions">Cloud Functions</SelectItem>
+                                    <SelectItem value="cloudrun">Cloud Run</SelectItem>
+                                    <SelectItem value="gke">GKE</SelectItem>
+                                    <SelectItem value="appengine">App Engine</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div>
+                                <Label>Credentials ID</Label>
+                                <Input
+                                  value={formData.deployment.config.credentials || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
+                                  placeholder="gcp-credentials"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {formData.deployment.platform === 'azure' && (
+                            <div className="space-y-4">
+                              <div>
+                                <Label>Azure Region</Label>
+                                <Input
+                                  value={formData.deployment.config.region || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('region', e.target.value)}
+                                  placeholder="eastus"
+                                />
+                              </div>
+                              <div>
+                                <Label>Azure Service</Label>
+                                <Select defaultValue="functions">
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Select Azure service" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="functions">Azure Functions</SelectItem>
+                                    <SelectItem value="appservice">App Service</SelectItem>
+                                    <SelectItem value="aks">AKS</SelectItem>
+                                    <SelectItem value="containerinstances">Container Instances</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div>
+                                <Label>Credentials ID</Label>
+                                <Input
+                                  value={formData.deployment.config.credentials || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
+                                  placeholder="azure-credentials"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {formData.deployment.platform === 'kubernetes' && (
+                            <div className="space-y-4">
+                              <div>
+                                <Label>Kubernetes Cluster</Label>
+                                <Input
+                                  value={formData.deployment.config.cluster || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('cluster', e.target.value)}
+                                  placeholder="my-cluster"
+                                />
+                              </div>
+                              <div>
+                                <Label>Namespace</Label>
+                                <Input
+                                  value={formData.deployment.config.namespace || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('namespace', e.target.value)}
+                                  placeholder="default"
+                                />
+                              </div>
+                              <div>
+                                <Label>Credentials ID</Label>
+                                <Input
+                                  value={formData.deployment.config.credentials || ''}
+                                  onChange={(e) => handleDeploymentConfigChange('credentials', e.target.value)}
+                                  placeholder="kubeconfig"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {formData.deployment.platform === 'custom' && (
+                            <div className="space-y-4">
+                              <div>
+                                <Label>Custom Deployment Configuration</Label>
+                                <p className="text-sm text-muted-foreground mb-2">
+                                  Define your custom deployment settings. These will be available as environment variables in your deployment step.
+                                </p>
+                                <div className="space-y-2">
+                                  <div className="flex gap-2">
+                                    <Input placeholder="Key" />
+                                    <Input placeholder="Value" />
+                                    <Button type="button">Add</Button>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                      
+                      {/* For automatic deployment mode, show a simple info message instead of all the configuration */}
+                      {formData.deployment.mode === 'automatic' && (
+                        <div className="p-4 border rounded-md bg-muted/50">
+                          <div className="flex items-start gap-2">
+                            <div className="text-blue-500 mt-0.5">
+                              <Play className="h-5 w-5" />
+                            </div>
+                            <div>
+                              <h4 className="text-sm font-medium mb-1">Automatic Deployment Enabled</h4>
+                              <p className="text-sm text-muted-foreground">
+                                Your application will be automatically deployed after a successful pipeline run. 
+                              </p>
                             </div>
                           </div>
                         </div>

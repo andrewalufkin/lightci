@@ -21,8 +21,8 @@ const workspaceService = new WorkspaceService();
 
 // Use mock services in test mode
 const pipelineRunnerService = isTest 
-  ? new MockPipelineRunnerService(workspaceService, testDb)
-  : new PipelineRunnerService(workspaceService);
+  ? new MockPipelineRunnerService(testDb, new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001'), workspaceService)
+  : new PipelineRunnerService(prisma, new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001'), workspaceService);
 
 const engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
 const schedulerService = new SchedulerService(pipelineRunnerService);

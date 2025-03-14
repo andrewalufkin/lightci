@@ -24,6 +24,7 @@ export interface PipelineConfig {
   
   // Deployment configuration
   deploymentEnabled?: boolean;
+  deploymentMode?: 'automatic' | 'manual';
   deploymentPlatform?: string;
   deploymentConfig?: Record<string, any>;
 }
@@ -63,6 +64,7 @@ export interface Pipeline {
   
   // Deployment configuration
   deploymentEnabled: boolean;
+  deploymentMode?: 'automatic' | 'manual';
   deploymentPlatform?: string;
   deploymentConfig?: Record<string, any>;
   

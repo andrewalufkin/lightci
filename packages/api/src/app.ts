@@ -1,3 +1,6 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import type { Request, Response, ErrorRequestHandler } from 'express-serve-static-core';
 import type { CorsOptions } from 'cors';
@@ -38,6 +41,10 @@ const corsOptions: CorsOptions = {
 // Initialize services and middleware
 const initializeApp = async () => {
   app.use(cors(corsOptions));
+  
+  // Add raw body handling for Stripe webhooks
+  app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
+  
   app.use(express.json());
   
   workspaceService = new WorkspaceService();

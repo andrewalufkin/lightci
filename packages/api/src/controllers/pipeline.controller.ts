@@ -164,8 +164,8 @@ export class PipelineController {
         repository: pipeline.repository
       });
 
-      // Start pipeline execution in background
-      this.pipelineRunnerService.runPipeline(pipelineId, branch || pipeline.defaultBranch || 'main', req.user.id, commit)
+      // Start pipeline execution in background with the existing run ID
+      this.pipelineRunnerService.runPipeline(pipelineId, branch || pipeline.defaultBranch || 'main', req.user.id, commit, run.id)
         .catch(error => {
           console.error(`[PipelineController] Error running pipeline ${pipelineId}:`, error);
         });
