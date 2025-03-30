@@ -6,7 +6,8 @@ import { Play, Settings, GitBranch, History, ChevronDown, ChevronUp, Clock } fro
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { PipelineSteps } from '@/components/pipelines/PipelineSteps';
-import { api, Pipeline } from '@/services/api';
+import { api } from '@/lib/api';
+import type { Pipeline } from '@/types/api';
 
 const RunningTimer: React.FC<{ startTime: number }> = ({ startTime }) => {
   const [elapsedTime, setElapsedTime] = useState('0:00');

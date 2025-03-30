@@ -9,7 +9,7 @@ export class DatabaseService {
 
   private constructor() {
     this.prisma = new PrismaClient({
-      log: Config.isDevelopment() ? ['query', 'error', 'warn'] : ['error'],
+      log: Config.isDevelopment() ? ['error', 'warn'] : ['error'],
       datasourceUrl: Config.getDatabaseUrl(),
     })
   }

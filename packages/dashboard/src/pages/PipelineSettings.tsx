@@ -37,6 +37,7 @@ interface Step {
   timeout?: number;
   environment?: Record<string, string>;
   dependencies?: string[];
+  runLocation?: string;
 }
 
 interface Pipeline {
@@ -191,7 +192,7 @@ const PipelineSettings: React.FC = () => {
   useEffect(() => {
     const fetchPipeline = async () => {
       try {
-        const { data } = await api.get<{ data: Pipeline }>(`/pipelines/${id}`);
+        const { data } = await api.client.get<{ data: Pipeline }>(`/pipelines/${id}`);
         console.log('Fetched pipeline data:', data.data);
         // Ensure artifactPatterns is always an array
         data.data.artifactPatterns = Array.isArray(data.data.artifactPatterns) ? data.data.artifactPatterns : [];
@@ -217,7 +218,7 @@ const PipelineSettings: React.FC = () => {
   const handleDelete = async () => {
     try {
       setDeleteLoading(true);
-      await api.delete(`/pipelines/${id}`);
+      await api.client.delete(`/pipelines/${id}`);
       navigate('/');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete pipeline');
@@ -231,7 +232,7 @@ const PipelineSettings: React.FC = () => {
     try {
       setIsUpdating(true);
       console.log('Updating pipeline with artifact patterns:', updatedPipeline.artifactPatterns);
-      const { data } = await api.put<{ data: Pipeline }>(`/pipelines/${id}`, updatedPipeline);
+      const { data } = await api.client.put<{ data: Pipeline }>(`/pipelines/${id}`, updatedPipeline);
       setPipeline(data.data);
       toast.success('Pipeline updated successfully');
     } catch (err) {
@@ -305,6 +306,7 @@ const PipelineSettings: React.FC = () => {
     const newStep = {
       ...stepForm,
       id: editingStep?.id || `step-${Date.now()}`,
+      runLocation: editingStep?.runLocation,
     };
 
     const updatedPipeline = {

@@ -23,13 +23,10 @@ export class PipelineStateService {
     if (this.monitoringInterval) {
       clearInterval(this.monitoringInterval);
       this.monitoringInterval = null;
-      console.log('[PipelineStateService] Stopped monitoring for stuck pipelines');
     }
   }
 
   async recoverStuckPipelines() {
-    console.log('[PipelineStateService] Checking for stuck pipelines...');
-    
     try {
       // Find all pipelines marked as running
       const runningPipelines = await prisma.pipeline.findMany({
@@ -41,8 +38,6 @@ export class PipelineStateService {
           },
         },
       });
-
-      console.log(`[PipelineStateService] Found ${runningPipelines.length} running pipelines`);
 
       for (const pipeline of runningPipelines) {
         const latestRun = pipeline.runs[0];

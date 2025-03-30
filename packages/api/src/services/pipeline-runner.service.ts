@@ -1,13 +1,13 @@
 import { PrismaClient } from '@prisma/client';
 import { WorkspaceService } from './workspace.service.js';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
-import * as fs from 'fs/promises';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { glob } from 'glob';
-import { DeploymentService, DeploymentConfig } from './deployment.service.js';
+import { DeploymentConfig, DeploymentService } from './deployment.service.js';
 import { EC2Client, DescribeInstancesCommand } from '@aws-sdk/client-ec2';
 import { PipelineStateService } from './pipeline-state.service.js';
 import { PipelineWithSteps, PipelineStep } from '../models/Pipeline.js';
@@ -16,6 +16,20 @@ import { Step } from '../models/Step.js';
 import { BillingService } from './billing.service.js';
 import { PipelinePreflightService } from './pipeline-preflight.service.js';
 import { EngineService } from './engine.service.js';
+import { existsSync, statSync } from 'fs';
+import { mkdtemp, unlink, rm } from 'fs/promises';
+import { NodeSSH } from 'node-ssh';
+import { mkdir } from 'fs/promises';
+import { writeFile } from 'fs/promises';
+import { readFile } from 'fs/promises';
+import * as fsPromises from 'fs/promises';
+import { v4 as uuidv4 } from 'uuid';
+import globby from 'globby';
+import { rimraf } from 'rimraf';
+import { CloudTasksService } from './cloud-tasks.service.js';
+import { InstanceProvisionerService } from './instance-provisioner.service.js';
+import { SshKeyService } from './ssh-key.service.js';
+import { RunStorageService } from './run-storage.service.js';
 
 const execAsync = promisify(exec);
 
@@ -59,6 +73,32 @@ interface PipelineStepResult extends Step {
   error?: string;
 }
 
+// Add a list of dangerous patterns to block
+const DANGEROUS_PATTERNS = [
+  // Fork bombs
+  /:\(\)\s*{\s*:\|\s*:\s*&\s*}\s*;:/i,             // :(){ :|: & };:
+  /\(\)\s*{\s*\|\s*&\s*};\s*\(\)/i,                // (){ |& }; ()
+  // Recursion that could cause resource exhaustion
+  /\(\)\s*{\s*.*\(\)\s*}\s*;\s*\(\)/i,             // Generic recursion detection
+  // Dangerous commands
+  /\brm\s+(-rf?|--recursive|--force)\s+[\/\*]/i,   // rm -rf / or similar
+  /\bmkfs\b/i,                                     // mkfs
+  /\bdd\b.*if=.*of=\/dev\/(hd|sd|mmcblk)/i,        // Disk destroyer
+  /\bchmod\s+-R\s+777\s+\//i,                      // chmod -R 777 /
+  // Shell escapes
+  /\b(wget|curl)\b.*\|\s*(bash|sh)/i,              // wget/curl | bash
+  // Disrupt system operation
+  />\s*\/dev\/sda/i,                               // > /dev/sda
+  /\bfill\b.*\/dev\/sd/i,                          // fill /dev/sd
+  // System modification
+  /\bsystemctl\s+(stop|disable)\s+\w/i,            // systemctl stop
+  // Command chaining that might hide malicious commands
+  /(`|\$\()\s*.*?(rm|mkfs|dd|chmod)\s/i            // Command substitution with dangerous commands
+];
+
+// Define DeploymentPlatform type if it's not exported
+type DeploymentPlatform = 'aws' | 'aws_ec2' | 'aws_ecs' | 'gcp' | 'azure' | 'kubernetes' | 'custom';
+
 export class PipelineRunnerService {
   private activeTimeouts: NodeJS.Timeout[] = [];
   private activeExecutions: Set<string>;
@@ -68,11 +108,15 @@ export class PipelineRunnerService {
   private engineService: EngineService;
   private deploymentService: DeploymentService;
   private preflightService: PipelinePreflightService;
+  private sshKeyService: SshKeyService;
+  private runStorageService: RunStorageService;
 
   constructor(
     prismaClient: PrismaClient = prisma,
     engineService: EngineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001'),
-    workspaceService: WorkspaceService = new WorkspaceService()
+    workspaceService: WorkspaceService = new WorkspaceService(),
+    sshKeyService?: SshKeyService,
+    runStorageService?: RunStorageService
   ) {
     this.prismaClient = prismaClient;
     this.engineService = engineService;
@@ -80,14 +124,53 @@ export class PipelineRunnerService {
     this.activeExecutions = new Set();
     this.billingService = new BillingService(prismaClient);
     this.preflightService = new PipelinePreflightService(prismaClient, this.billingService);
-    this.deploymentService = new DeploymentService(engineService);
+    this.deploymentService = new DeploymentService(prismaClient, engineService, sshKeyService);
+    this.runStorageService = runStorageService || new RunStorageService();
+    this.sshKeyService = sshKeyService || new SshKeyService(prismaClient);
+  }
+
+  /**
+   * Validates and sanitizes command input to prevent dangerous operations
+   * @param command The command to validate
+   * @returns A validated command or throws an error if dangerous
+   */
+  private validateCommand(command: string): string {
+    // Trim the command to remove leading/trailing whitespace
+    const trimmedCommand = command.trim();
+    
+    // Check for empty commands
+    if (!trimmedCommand) {
+      throw new Error('Empty command is not allowed');
+    }
+    
+    // Check against dangerous patterns
+    for (const pattern of DANGEROUS_PATTERNS) {
+      if (pattern.test(trimmedCommand)) {
+        throw new Error('Potentially dangerous command detected and blocked for security reasons');
+      }
+    }
+    
+    // Check for attempts to run commands with elevated privileges
+    if (/\bsudo\b|\bsu\b|\bdoas\b/.test(trimmedCommand)) {
+      throw new Error('Elevated privilege commands are not allowed');
+    }
+    
+    // Block attempts to download and execute scripts
+    if (/\bcurl\b.*\|\s*(bash|sh)|wget.*\|\s*(bash|sh)/.test(trimmedCommand)) {
+      throw new Error('Downloading and executing scripts is not allowed');
+    }
+    
+    return trimmedCommand;
   }
 
   private async executeCommand(command: string, workingDir: string, env: Record<string, string> = {}): Promise<{ output: string; error?: string }> {
     try {
+      // Validate the command before executing
+      const validatedCommand = this.validateCommand(command);
+      
       // Check if working directory exists and is writable
       try {
-        await fs.access(workingDir, fs.constants.W_OK);
+        await fsPromises.access(workingDir, fsPromises.constants.W_OK);
         console.log(`[PipelineRunner] Working directory ${workingDir} is accessible and writable`);
       } catch (error) {
         console.error(`[PipelineRunner] Working directory is not accessible or writable:`, {
@@ -100,7 +183,7 @@ export class PipelineRunnerService {
 
       // Log command execution details
       console.log(`[PipelineRunner] Executing command:`, {
-        command,
+        command: validatedCommand,
         workingDir,
         environment: Object.keys(env),
         timestamp: new Date().toISOString()
@@ -111,7 +194,7 @@ export class PipelineRunnerService {
       delete cleanEnv.NODE_OPTIONS;
 
       // Execute command with timeout and buffer limits
-      const { stdout, stderr } = await execAsync(command, {
+      const { stdout, stderr } = await execAsync(validatedCommand, {
         cwd: workingDir,
         env: cleanEnv,
         timeout: 30 * 60 * 1000, // 30 minute timeout
@@ -120,7 +203,7 @@ export class PipelineRunnerService {
 
       // Log successful execution
       console.log(`[PipelineRunner] Command executed successfully:`, {
-        command,
+        command: validatedCommand,
         workingDir,
         stdoutLength: stdout.length,
         stderrLength: stderr.length,
@@ -139,7 +222,7 @@ export class PipelineRunnerService {
     } catch (error: any) {
       // Log detailed error information
       console.error(`[PipelineRunner] Command execution failed:`, {
-        command,
+        command, // Use original command - validatedCommand might not be available if validation failed
         workingDir,
         error: error.message,
         stdout: error.stdout,
@@ -337,7 +420,11 @@ export class PipelineRunnerService {
     return { output: deployResult.message || 'Deployment successful' };
   }
 
-  private async executePipeline(pipeline: PipelineWithSteps, runId: string, branch: string): Promise<void> {
+  private async executePipeline(
+    pipeline: PipelineWithSteps,
+    runId: string,
+    branch: string
+  ): Promise<void> {
     let workspace: Workspace | undefined;
     let deploymentCompleted = false;
     let timeoutId: NodeJS.Timeout | undefined;
@@ -370,7 +457,7 @@ export class PipelineRunnerService {
           
           // Verify workspace directory exists and is writable
           try {
-            await fs.access(workspacePath, fs.constants.W_OK);
+            await fsPromises.access(workspacePath, fsPromises.constants.W_OK);
             console.log(`[PipelineRunner] Workspace directory ${workspacePath} is accessible and writable`);
           } catch (error: unknown) {
             console.error(`[PipelineRunner] Workspace directory ${workspacePath} is not accessible:`, error);
@@ -434,7 +521,7 @@ export class PipelineRunnerService {
             });
 
             const command = step.name === 'Source' 
-              ? `git clone ${pipeline.repository} . && git checkout ${branch}`
+              ? this.buildSourceCommand(pipeline.repository, branch)
               : step.command;
 
             console.log(`[PipelineRunner] Executing command for step ${step.name}:`, {
@@ -463,39 +550,186 @@ export class PipelineRunnerService {
                   console.log(`[PipelineRunner] Step requires deployed instance, triggering deployment...`);
                   const deploymentService = new DeploymentService(this.engineService);
                   
-                  // Create deployment config from pipeline configuration
+                  // Create deployment configuration
                   const deploymentConfig: DeploymentConfig = {
-                    platform: pipeline.deploymentMode === 'automatic' ? 'aws' : (pipeline.deploymentPlatform || 'custom'),
+                    platform: pipeline.deploymentPlatform as DeploymentPlatform || 'aws',
                     config: {
-                      ...(pipeline.deploymentConfig as Record<string, any> || {}),
-                      ...(pipeline.deploymentMode === 'automatic' ? {
-                        service: 'ec2',
-                        region: process.env.AWS_DEFAULT_REGION || 'us-east-1',
-                        instanceType: 't2.micro',
-                        runLocation: 'deployed_instance',
-                        securityGroupIds: [process.env.AWS_SECURITY_GROUP_ID],
-                        subnetId: process.env.AWS_SUBNET_ID
-                      } : {})
+                      // Only include necessary properties from the original config
+                      // instead of spreading the entire object which can be too large
+                      service: 'ec2',
+                      region: process.env.AWS_DEFAULT_REGION || 'us-east-1',
+                      instanceType: 't2.micro',
+                      runLocation: 'deployed_instance',
+                      securityGroupIds: [process.env.AWS_SECURITY_GROUP_ID],
+                      subnetId: process.env.AWS_SUBNET_ID
                     },
                     mode: pipeline.deploymentMode || 'automatic',
                     awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID,
                     awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-                    region: process.env.AWS_DEFAULT_REGION || 'us-east-1'
+                    region: process.env.AWS_DEFAULT_REGION || 'us-east-1',
+                    pipelineId: pipeline.id
                   };
 
-                  const deployResult = await deploymentService.deployPipelineRun(runId, deploymentConfig);
+                  // Make a deep copy to avoid reference issues
+                  const deepCopyConfig = JSON.parse(JSON.stringify(deploymentConfig));
+                  
+                  // Carefully extract any SSH keys from the original config and add them directly to avoid JSON stringify issues
+                  if (typeof pipeline.deploymentConfig === 'object' && pipeline.deploymentConfig !== null) {
+                    const originalConfig = pipeline.deploymentConfig as Record<string, any>;
+                    
+                    // Extract keys directly without going through JSON.stringify to preserve formatting
+                    if (originalConfig.ec2SshKey) {
+                      deepCopyConfig.ec2SshKey = originalConfig.ec2SshKey;
+                      console.log(`[PipelineRunner] Preserved original SSH key (${originalConfig.ec2SshKey.length} chars)`);
+                    }
+                    
+                    if (originalConfig.ec2SshKeyEncoded) {
+                      deepCopyConfig.ec2SshKeyEncoded = originalConfig.ec2SshKeyEncoded;
+                      console.log(`[PipelineRunner] Preserved original encoded SSH key (${originalConfig.ec2SshKeyEncoded.length} chars)`);
+                    }
+                  }
+                  
+                  // Trigger deployment
+                  const deployResult = await deploymentService.deployPipelineRun(runId, deepCopyConfig);
                   if (!deployResult.success) {
                     throw new Error(`Deployment failed: ${deployResult.message}`);
                   }
+                  
+                  console.log(`[PipelineRunner] Deployment completed successfully`);
                   deploymentCompleted = true;
-                  deployedInstanceConfig = deploymentConfig;
+                  
+                  // Fetch the deployed app record to get instance information
+                  const deployedApp = await this.prismaClient.deployedApp.findFirst({
+                    where: { pipelineId: pipeline.id },
+                    orderBy: { lastDeployed: 'desc' }
+                  });
+                  
+                  if (!deployedApp) {
+                    throw new Error('Deployment record not found after successful deployment');
+                  }
+                  
+                  // Look up the most recent auto-deployment for this pipeline
+                  const autoDeployment = await this.prismaClient.autoDeployment.findFirst({
+                    where: { 
+                      pipelineId: pipeline.id,
+                      status: 'active' 
+                    },
+                    orderBy: { createdAt: 'desc' }
+                  });
+                  
+                  // Create/update the deployment config for subsequent steps
+                  deployedInstanceConfig = {
+                    ...deepCopyConfig,
+                    instanceId: autoDeployment?.instanceId || '',
+                    publicDns: deployedApp.url.replace(/^https?:\/\//, '').replace(/\/$/, ''),
+                  };
+                  
+                  console.log(`[PipelineRunner] Saved instance details for future steps:`, {
+                    instanceId: deployedInstanceConfig.instanceId,
+                    publicDns: deployedInstanceConfig.publicDns
+                  });
+                  
+                  // Extract key name from auto deployment metadata if available
+                  let keyName = '';
+                  if (autoDeployment?.metadata) {
+                    try {
+                      const metadata = typeof autoDeployment.metadata === 'string' 
+                        ? JSON.parse(autoDeployment.metadata) 
+                        : autoDeployment.metadata;
+                        
+                      if (metadata.keyName && typeof metadata.keyName === 'string') {
+                        keyName = metadata.keyName;
+                        console.log(`[PipelineRunner] Found key name in deployment metadata: ${keyName}`);
+                      }
+                    } catch (metadataError) {
+                      console.error(`[PipelineRunner] Error parsing deployment metadata: ${metadataError.message}`);
+                    }
+                  }
+                  
+                  // IMPORTANT: Check if we have SSH key information in the deployment's config
+                  // Try to locate the SSH key file that was created during deployment
+                  const homeDir = process.env.HOME || process.env.USERPROFILE || '/tmp';
+                  const sshDir = path.join(homeDir, '.ssh');
+                  
+                  // First try to locate the key by name if we have it from metadata
+                  if (keyName && keyName.startsWith('lightci-')) {
+                    try {
+                      const keyPath = path.join(sshDir, `${keyName}.pem`);
+                      const backupPath = path.join(process.cwd(), `${keyName}.pem`);
+                      
+                      if (fs.existsSync(keyPath)) {
+                        const keyContent = fs.readFileSync(keyPath, 'utf8');
+                        deployedInstanceConfig.ec2SshKey = keyContent;
+                        deployedInstanceConfig.ec2SshKeyEncoded = Buffer.from(keyContent).toString('base64');
+                        console.log(`[PipelineRunner] Using SSH key from ${keyPath} found via metadata`);
+                      } else if (fs.existsSync(backupPath)) {
+                        const keyContent = fs.readFileSync(backupPath, 'utf8');
+                        deployedInstanceConfig.ec2SshKey = keyContent;
+                        deployedInstanceConfig.ec2SshKeyEncoded = Buffer.from(keyContent).toString('base64');
+                        console.log(`[PipelineRunner] Using SSH key from ${backupPath} found via metadata`);
+                      } else {
+                        console.log(`[PipelineRunner] Key file ${keyName}.pem not found, will try pattern matching`);
+                      }
+                    } catch (keyError) {
+                      console.error(`[PipelineRunner] Error loading key file by name: ${keyError.message}`);
+                    }
+                  }
+                  
+                  // Fall back to pattern matching if we still don't have a key
+                  if (!deployedInstanceConfig.ec2SshKey) {
+                    // Find recent SSH key files matching LightCI pattern
+                    let keyFiles: string[] = [];
+                    try {
+                      if (fs.existsSync(sshDir)) {
+                        const sshFiles = fs.readdirSync(sshDir)
+                          .filter(file => file.startsWith('lightci-') && file.endsWith('.pem'))
+                          .map(file => path.join(sshDir, file));
+                        
+                        // Sort by most recent
+                        keyFiles = sshFiles
+                          .filter(file => fs.existsSync(file))
+                          .sort((a, b) => {
+                            const statA = fs.statSync(a);
+                            const statB = fs.statSync(b);
+                            return statB.mtimeMs - statA.mtimeMs;
+                          });
+                      }
+                      
+                      if (keyFiles.length > 0) {
+                        const mostRecentKeyFile = keyFiles[0];
+                        console.log(`[PipelineRunner] Found recent SSH key file: ${mostRecentKeyFile}`);
+                        
+                        try {
+                          // Read the key content
+                          const keyContent = fs.readFileSync(mostRecentKeyFile, 'utf8');
+                          // Update the deployment config with the key
+                          deployedInstanceConfig.ec2SshKey = keyContent;
+                          deployedInstanceConfig.ec2SshKeyEncoded = Buffer.from(keyContent).toString('base64');
+                          console.log(`[PipelineRunner] Added SSH key from ${mostRecentKeyFile} to deployment config`);
+                        } catch (keyReadError) {
+                          console.error(`[PipelineRunner] Error reading SSH key file: ${keyReadError.message}`);
+                        }
+                      } else {
+                        console.log(`[PipelineRunner] No recent SSH key files found in ${sshDir}`);
+                      }
+                    } catch (keySearchError) {
+                      console.error(`[PipelineRunner] Error searching for SSH key files: ${keySearchError.message}`);
+                    }
+                  }
                 }
-
-                // Execute command on deployed instance
+              
                 if (!deployedInstanceConfig) {
-                  throw new Error('Deployment configuration not available');
+                  throw new Error('No deployment configuration available for remote execution');
                 }
-                result = await this.executeOnDeployedInstance(command, deployedInstanceConfig, step.environment || {});
+                
+                console.log(`[PipelineRunner] Executing command on deployed instance: ${deployedInstanceConfig.publicDns}`);
+                result = await this.executeOnDeployedInstance(
+                  deployedInstanceConfig,
+                  [command],
+                  (msg) => {
+                    console.log(`[SSH] ${msg}`);
+                  }
+                );
               } else {
                 // Execute locally
                 result = await this.executeCommand(command, workspacePath, step.environment || {});
@@ -660,23 +894,107 @@ export class PipelineRunnerService {
       
       // Default artifact patterns
       const defaultPatterns = [
+        // Distribution and build outputs
         '**/dist/**',           // Distribution files
         '**/build/**',          // Build output
+        'build/**',             // React build output (root level)
+        'build/static/**',      // React static assets
+        'dist/**',              // Root level dist directory
+        'out/**',               // Next.js static export
+        '.next/**',             // Next.js build directory
+        '.output/**',           // Nuxt.js build directory
+        
+        // Common static files
+        '**/static/**',         // Static assets
+        '**/assets/**',         // Asset files
+        '**/public/**',         // Public assets directory
+        
+        // Source code files
         '**/src/**',            // Source code files
+        'src/**',               // Root level source code
+        '**/lib/**',            // Library code
+        '**/components/**',     // Component directories
+        '**/pages/**',          // Pages directories (Next.js etc)
+        '**/layouts/**',        // Layout components
+        '**/styles/**',         // Style files
+        
+        // Configuration files
         '**/package.json',      // Package configuration in any directory
         './package.json',       // Root package.json
         'package.json',         // Alternative root package.json pattern
+        'package-lock.json',    // Lock file for exact dependency versions
+        'yarn.lock',            // Yarn lock file
+        'pnpm-lock.yaml',       // PNPM lock file
         '**/.env*',             // Environment configuration files
+        '**/tsconfig.json',     // TypeScript configuration
+        '**/vite.config.*',     // Vite configuration
+        '**/webpack.config.*',  // Webpack configuration
+        '**/next.config.*',     // Next.js configuration
+        '**/nuxt.config.*',     // Nuxt.js configuration
+        '**/svelte.config.*',   // Svelte configuration
+        '**/angular.json',      // Angular configuration
+        
+        // Scripts and binaries
         '**/scripts/**',        // Script directories
         '**/*.sh',              // Shell scripts
         '**/bin/**',            // Binary/executable scripts
+        '**/node_modules/.bin/**', // Executable scripts in node_modules
+        
+        // Docker related
         '**/docker-compose*',   // Docker compose files
         '**/Dockerfile*',       // Dockerfile configurations
-        '**/config/**'          // Configuration directories
+        
+        // Backend specific
+        '**/api/**',            // API directories
+        '**/routes/**',         // Route definitions
+        '**/controllers/**',    // Controller files
+        '**/middlewares/**',    // Middleware files
+        '**/models/**',         // Database models
+        '**/migrations/**',     // Database migrations
+        
+        // Monorepo specific
+        '**/apps/**/*.js',      // JavaScript files in apps (monorepo)
+        '**/apps/**/*.ts',      // TypeScript files in apps (monorepo)
+        '**/apps/**/*.jsx',     // React JSX files in apps (monorepo)
+        '**/apps/**/*.tsx',     // React TSX files in apps (monorepo)
+        '**/packages/**/*.js',  // JavaScript files in packages (monorepo)
+        '**/packages/**/*.ts',  // TypeScript files in packages (monorepo)
+        
+        // Common frontend directories
+        'frontend/package.json',
+        'frontend/build/**/*',
+        'frontend/dist/**/*',
+        'frontend/src/**/*',
+        'frontend/public/**/*',
+        'frontend/.next/**/*',
+        'client/package.json',
+        'client/build/**/*',
+        'client/dist/**/*',
+        'client/src/**/*',
+        'client/public/**/*',
+        'web/package.json',
+        'web/build/**/*',
+        'web/dist/**/*',
+        'web/src/**/*',
+        'web/public/**/*',
+        
+        // Common backend directories
+        'backend/package.json',
+        'backend/dist/**/*',
+        'backend/src/**/*',
+        'server/package.json',
+        'server/dist/**/*',
+        'server/src/**/*',
+        'api/package.json',
+        'api/dist/**/*',
+        'api/src/**/*'
       ];
 
       // Get configured patterns and combine with defaults
-      const configuredPatterns = pipeline.artifactConfig?.patterns || [];
+      const configuredPatterns = Array.isArray(pipeline.artifactPatterns) 
+        ? pipeline.artifactPatterns 
+        : (pipeline.artifactConfig?.patterns || []);
+      
       const artifactPatterns = Array.from(new Set([...defaultPatterns, ...configuredPatterns]));
 
       console.log(`[PipelineRunner] Using artifact patterns:`, {
@@ -690,8 +1008,8 @@ export class PipelineRunnerService {
       const runArtifactsDir = path.join(artifactsBaseDir, runId);
       
       // Ensure directory exists and is empty
-      await fs.rm(runArtifactsDir, { recursive: true, force: true });
-      await fs.mkdir(runArtifactsDir, { recursive: true });
+      await fsPromises.rm(runArtifactsDir, { recursive: true, force: true });
+      await fsPromises.mkdir(runArtifactsDir, { recursive: true });
       
       console.log(`[PipelineRunner] Created artifacts directory: ${runArtifactsDir}`);
       
@@ -723,13 +1041,13 @@ export class PipelineRunnerService {
           
           try {
             // Create directory structure for the destination
-            await fs.mkdir(path.dirname(destPath), { recursive: true });
+            await fsPromises.mkdir(path.dirname(destPath), { recursive: true });
             
             // Copy file
-            await fs.copyFile(sourcePath, destPath);
+            await fsPromises.copyFile(sourcePath, destPath);
             
             // Get file size
-            const stats = await fs.stat(sourcePath);
+            const stats = await fsPromises.stat(sourcePath);
             totalSize += stats.size;
             artifactsCount++;
             
@@ -761,28 +1079,23 @@ export class PipelineRunnerService {
       // Create a usage record for the total artifact storage
       const sizeInMB = totalSize / (1024 * 1024); // Convert bytes to MB
       
-      // Create a usage record directly
-      await this.prismaClient.$executeRaw`
-        INSERT INTO usage_records (
-          id, 
-          usage_type, 
-          quantity, 
-          storage_change, 
-          pipeline_run_id, 
-          project_id, 
-          user_id, 
-          metadata
-        ) VALUES (
-          ${crypto.randomUUID()}, 
-          'artifact_storage', 
-          ${sizeInMB}, 
-          ${totalSize}, 
-          ${runId}, 
-          ${pipelineWithProject.project?.id || null}, 
-          ${pipelineWithProject.createdById || null}, 
-          ${'{"action":"created","artifact_count":' + artifactsCount + ',"storage_type":"' + pipelineWithProject.artifactStorageType + '"}'}
-        )
-      `;
+      // Create a usage record using Prisma's proper methods instead of raw SQL
+      await this.prismaClient.usageRecord.create({
+        data: {
+          id: crypto.randomUUID(),
+          usage_type: 'artifact_storage',
+          quantity: sizeInMB,
+          storage_change: totalSize,
+          pipeline_run_id: runId,
+          project_id: pipelineWithProject.project?.id,
+          user_id: pipelineWithProject.createdById,
+          metadata: {
+            action: "created",
+            artifact_count: artifactsCount,
+            storage_type: pipelineWithProject.artifactStorageType
+          }
+        }
+      });
       
       console.log(`[PipelineRunner] Successfully collected ${artifactsCount} artifacts (${totalSize} bytes) for run ${runId}`);
       
@@ -798,87 +1111,122 @@ export class PipelineRunnerService {
     }
   }
 
-  // Helper method to execute commands on the deployed instance
+  /**
+   * Execute a command on the deployed instance via SSH
+   */
   private async executeOnDeployedInstance(
-    command: string,
-    deploymentConfig: DeploymentConfig,
-    environment: Record<string, string> = {}
+    config: DeploymentConfig,
+    commands: string[],
+    logCallback: (message: string) => void
   ): Promise<{ output: string; error?: string }> {
+    // Create temp directory with fs/promises
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'lightci-deploy-'));
+    const sshKeyPath = path.join(tmpDir, 'ssh_key.pem');
+    
+    console.log(`[PipelineRunner] Created temporary directory: ${tmpDir}`);
+    console.log(`[PipelineRunner] Will write SSH key to: ${sshKeyPath}`);
+    
+    // Changed to await the processSshKey call
+    if (!await this.processSshKey(config, sshKeyPath)) {
+      const errorMsg = 'Failed to process SSH key';
+      logCallback(`[ERROR] ${errorMsg}`);
+      throw new Error(errorMsg);
+    }
+    
+    // Use publicDns from the config
+    const host = config.publicDns;
+    if (!host) {
+      const errorMsg = 'No host specified for SSH connection (publicDns missing)';
+      logCallback(`[ERROR] ${errorMsg}`);
+      throw new Error(errorMsg);
+    }
+    
+    console.log(`[PipelineRunner] Connecting to EC2 instance via SSH: ${host}`);
+    logCallback(`Connecting to instance: ${host}`);
+    
+    // Read the key directly instead of relying on path
+    let privateKeyContent;
     try {
-      // Parse config if it's a string
-      const config = typeof deploymentConfig === 'string' 
-        ? JSON.parse(deploymentConfig) 
-        : deploymentConfig; // Use deploymentConfig directly, not config property
+      privateKeyContent = fs.readFileSync(sshKeyPath, 'utf8');
+    } catch (readError) {
+      const errorMsg = `Failed to read SSH key: ${readError.message}`;
+      logCallback(`[ERROR] ${errorMsg}`);
+      throw new Error(errorMsg);
+    }
+    
+    const sshConnectConfig = {
+      host,
+      username: config.ec2Username || 'ec2-user',
+      port: 22,
+      privateKey: privateKeyContent, // Use the content directly instead of a path
+      readyTimeout: 30000,
+      debug: (message: string) => console.log(`[SSH Debug] ${message}`)
+    };
+    
+    try {
+      const sshClient = new NodeSSH();
+      await sshClient.connect(sshConnectConfig);
       
-      if (!config.awsAccessKeyId || !config.awsSecretAccessKey || !config.region) {
-        throw new Error('Missing required AWS credentials');
-      }
-
-      // Create new EC2 client with credentials
-      const ec2Client = new EC2Client({
-        region: config.region,
-        credentials: {
-          accessKeyId: config.awsAccessKeyId,
-          secretAccessKey: config.awsSecretAccessKey
-        }
-      });
-
-      // Get instance details
-      const describeCommand = new DescribeInstancesCommand({
-        InstanceIds: [config.ec2InstanceId]
-      });
-      const instanceData = await ec2Client.send(describeCommand);
-
-      const instance = instanceData.Reservations?.[0]?.Instances?.[0];
-      if (!instance || !instance.PublicDnsName) {
-        throw new Error(`Unable to find public DNS for instance ${config.ec2InstanceId}`);
-      }
-
-      // Create temporary directory for SSH key
-      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lightci-ssh-'));
-      const keyPath = path.join(tempDir, 'ssh_key.pem');
-
-      try {
-        // Write SSH key to temporary file
-        await fs.writeFile(keyPath, config.ec2SshKey, { mode: 0o600 });
-
-        // Build environment variables string
-        const envString = Object.entries(environment)
-          .map(([key, value]) => `export ${key}="${value}"`)
-          .join(' && ');
-
-        // Add cleanup command to kill any existing processes on port 3000
-        const cleanupCmd = `sudo lsof -t -i:3000 | xargs -r sudo kill -9`;
+      let combinedStdout = '';
+      let combinedStderr = '';
+      let lastStatus = 0;
+      
+      for (const command of commands) {
+        console.log(`[PipelineRunner] Executing command: ${command}`);
+        logCallback(`Executing: ${command}`);
         
-        // Append '&' to run in background and redirect output to nohup.out
-        const backgroundCommand = `nohup ${command} > nohup.out 2>&1 &`;
-        
-        // Execute command via SSH with cleanup and background execution
-        const sshCommand = `ssh -o StrictHostKeyChecking=no -i "${keyPath}" ${config.ec2Username}@${instance.PublicDnsName} "${cleanupCmd} 2>/dev/null || true && cd ${config.ec2DeployPath || '/home/ec2-user/app'} && ${envString} ${envString ? '&&' : ''} (${backgroundCommand}) && echo 'Process started in background'"`;
-
-        try {
-          const { stdout, stderr } = await execAsync(sshCommand);
-          await fs.rm(tempDir, { recursive: true });
-          
-          if (stderr) {
-            return { output: stdout, error: stderr };
+        const result = await sshClient.execCommand(command, {
+          onStdout: (chunk) => {
+            const output = chunk.toString();
+            console.log(`[SSH stdout] ${output}`);
+            logCallback(output);
+            combinedStdout += output;
+          },
+          onStderr: (chunk) => {
+            const output = chunk.toString();
+            console.error(`[SSH stderr] ${output}`);
+            logCallback(`[ERROR] ${output}`);
+            combinedStderr += output;
           }
-          return { output: stdout };
-        } catch (error: any) {
-          await fs.rm(tempDir, { recursive: true });
-          return { 
-            output: error.stdout || '',
-            error: error.stderr || error.message 
-          };
+        });
+        
+        lastStatus = result.code;
+        if (lastStatus !== 0) {
+          console.error(`[PipelineRunner] Command failed with exit code: ${lastStatus}`);
+          logCallback(`Command failed with exit code: ${lastStatus}`);
+          break;
         }
-      } catch (error: any) {
-        // Clean up temp directory on error
-        await fs.rm(tempDir, { recursive: true }).catch(() => {});
-        throw error;
       }
-    } catch (error: any) {
-      console.error('[PipelineRunner] Execution on deployed instance failed:', error);
-      throw error;
+      
+      sshClient.dispose();
+      try {
+        await unlink(sshKeyPath);
+        await rm(tmpDir, { recursive: true, force: true });
+        console.log(`[PipelineRunner] Cleaned up temporary directory: ${tmpDir}`);
+      } catch (cleanupError) {
+        console.error(`[PipelineRunner] Error cleaning up: ${cleanupError}`);
+      }
+      
+      // Return in the expected format
+      return {
+        output: combinedStdout + (combinedStderr ? `\nStderr: ${combinedStderr}` : ''),
+        error: lastStatus !== 0 ? `Command exited with code ${lastStatus}` : undefined
+      };
+    } catch (error) {
+      console.error(`[PipelineRunner] SSH connection error:`, error);
+      logCallback(`[ERROR] SSH connection failed: ${error.message}`);
+      
+      try {
+        await unlink(sshKeyPath);
+        await rm(tmpDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        // Ignore cleanup errors at this point
+      }
+      
+      return {
+        output: '',
+        error: error instanceof Error ? error.message : 'Unknown SSH connection error'
+      };
     }
   }
 
@@ -921,5 +1269,564 @@ export class PipelineRunnerService {
     this.activeExecutions.clear();
     
     console.log('[PipelineRunnerService] Cleanup completed');
+  }
+
+  // Helper method to build source command that handles subdirectory paths in GitHub URLs
+  private buildSourceCommand(repoUrl: string, branch: string): string {
+    // Check if the URL contains a GitHub tree path
+    const treePathMatch = repoUrl.match(/\/tree\/[^\/]+\/(.+)$/);
+    
+    if (treePathMatch) {
+      // Extract the base repo URL and subdirectory
+      const baseRepoUrl = repoUrl.replace(/\/tree\/[^\/]+\/.+$/, '');
+      const subDir = treePathMatch[1];
+      
+      console.log(`[PipelineRunner] Detected subdirectory in repository URL: ${subDir}`);
+      console.log(`[PipelineRunner] Will clone from base URL: ${baseRepoUrl}`);
+      
+      // Build command to clone the repo, checkout the branch, and ensure the subdirectory exists
+      return `git clone ${baseRepoUrl} . && git checkout ${branch} && if [ -d "${subDir}" ]; then echo "Subdirectory ${subDir} exists"; else echo "Warning: Subdirectory ${subDir} not found"; fi`;
+    }
+    
+    // Standard repo URL, just clone and checkout
+    return `git clone ${repoUrl} . && git checkout ${branch}`;
+  }
+
+  /**
+   * Process, validate and save an SSH key to a file
+   * Handles base64 encoded keys and normalizes line endings
+   */
+  private async processSshKey(config: DeploymentConfig, keyPath: string): Promise<boolean> {
+    try {
+      console.log('[PipelineRunner] Processing SSH key');
+      console.log(`[PipelineRunner] Key path: ${keyPath}`);
+      
+      // Try to get the key from both possible sources
+      const sshKey = config.ec2SshKey || '';
+      const encodedKey = config.ec2SshKeyEncoded || '';
+      
+      console.log(`[PipelineRunner] Regular key length: ${sshKey.length}, Encoded key length: ${encodedKey.length}`);
+      
+      let finalKey = '';
+      let source = '';
+      
+      // First try the encoded key if present
+      if (encodedKey.length > 0) {
+        try {
+          const decodedKey = Buffer.from(encodedKey, 'base64').toString('utf-8');
+          console.log(`[PipelineRunner] Successfully decoded Base64 key (${decodedKey.length} chars)`);
+          
+          // Verify it looks like a PEM key (has BEGIN and END markers)
+          if (decodedKey.includes('-----BEGIN') && decodedKey.includes('-----END')) {
+            finalKey = decodedKey;
+            source = 'decoded';
+            console.log(`[PipelineRunner] Using decoded key`);
+          } else {
+            console.log(`[PipelineRunner] Decoded key doesn't look like valid PEM format`);
+          }
+        } catch (decodeError) {
+          console.log(`[PipelineRunner] Error decoding Base64 key: ${decodeError.message}`);
+        }
+      }
+      
+      // Fall back to regular key if decoded key didn't work
+      if (!finalKey && sshKey.length > 0) {
+        finalKey = sshKey;
+        source = 'regular';
+        console.log(`[PipelineRunner] Using regular SSH key`);
+      }
+      
+      // NEW: Look for recent keys in standard locations if we don't have a key yet
+      if (!finalKey) {
+        console.log(`[PipelineRunner] No key in config, searching for recently created keys`);
+        
+        // Look for keys that match lightci-*.pem pattern
+        const homeDir = process.env.HOME || process.env.USERPROFILE || '/tmp';
+        const sshDir = path.join(homeDir, '.ssh');
+        
+        // Find all key files in ~/.ssh/ and current directory
+        let keyFiles: string[] = [];
+        
+        try {
+          // Look in ~/.ssh
+          if (fs.existsSync(sshDir)) {
+            const sshFiles = fs.readdirSync(sshDir)
+              .filter(file => file.startsWith('lightci-') && file.endsWith('.pem'))
+              .map(file => path.join(sshDir, file));
+            keyFiles.push(...sshFiles);
+          }
+          
+          // Look in current directory
+          const currentDirFiles = fs.readdirSync(process.cwd())
+            .filter(file => file.startsWith('lightci-') && file.endsWith('.pem'))
+            .map(file => path.join(process.cwd(), file));
+          keyFiles.push(...currentDirFiles);
+          
+          // Sort by most recently modified
+          keyFiles = keyFiles
+            .filter(file => fs.existsSync(file))
+            .sort((a, b) => {
+              const statA = fs.statSync(a);
+              const statB = fs.statSync(b);
+              return statB.mtimeMs - statA.mtimeMs; // Sort descending by modification time
+            });
+            
+            console.log(`[PipelineRunner] Found ${keyFiles.length} potential key files`);
+            
+            // Try each key from most recent to oldest
+            for (const keyFile of keyFiles) {
+              try {
+                console.log(`[PipelineRunner] Trying key file: ${keyFile}`);
+                const keyContent = fs.readFileSync(keyFile, 'utf8');
+                
+                // Basic validation
+                if (keyContent.includes('-----BEGIN') && keyContent.includes('-----END')) {
+                  finalKey = keyContent;
+                  source = `file:${keyFile}`;
+                  console.log(`[PipelineRunner] Found valid SSH key in ${keyFile}`);
+                  break;
+                }
+              } catch (readError) {
+                console.log(`[PipelineRunner] Error reading key file ${keyFile}: ${readError.message}`);
+              }
+            }
+        } catch (searchError) {
+          console.log(`[PipelineRunner] Error searching for key files: ${searchError.message}`);
+        }
+      }
+      
+      if (!finalKey) {
+        console.log(`[PipelineRunner] No valid SSH key found in configuration or file system`);
+        console.log(`[PipelineRunner] Please ensure a valid SSH key is available for deployment`);
+        
+        // NEW: Provide detailed error for debugging
+        if (config.instanceId) {
+          console.log(`[PipelineRunner] Instance ID: ${config.instanceId}`);
+        }
+        if (config.publicDns) {
+          console.log(`[PipelineRunner] Instance DNS: ${config.publicDns}`);
+        }
+        
+        return false;
+      }
+
+      // Force the key to have proper RSA format - SSH requires specific formatting
+      if (finalKey.includes('-----BEGIN') && finalKey.includes('-----END')) {
+        // Extract the headers and content for proper reformatting
+        const beginMatch = finalKey.match(/(-----BEGIN [^-]+ -----)/);
+        const endMatch = finalKey.match(/(-----END [^-]+ -----)/);
+
+        if (beginMatch && endMatch) {
+          const beginHeader = beginMatch[1];
+          const endHeader = endMatch[1];
+          
+          // Extract the content between headers, removing all whitespace
+          let content = finalKey.substring(
+            finalKey.indexOf(beginHeader) + beginHeader.length,
+            finalKey.indexOf(endHeader)
+          ).replace(/\s+/g, '');
+          
+          // Rebuild key with proper formatting (64 char lines)
+          const contentLines = [];
+          for (let i = 0; i < content.length; i += 64) {
+            contentLines.push(content.substring(i, i + 64));
+          }
+          
+          finalKey = [
+            beginHeader,
+            ...contentLines,
+            endHeader
+          ].join('\n');
+          
+          console.log(`[PipelineRunner] Reformed key to standard format with ${contentLines.length} lines`);
+        }
+      }
+
+      // Log safely truncated key preview for debugging
+      if (finalKey.length > 20) {
+        console.log(`[PipelineRunner] Key preview: ${finalKey.substring(0, 10)}...${finalKey.substring(finalKey.length - 10)}`);
+      }
+      
+      // Check if the key has proper PEM format
+      const begins = finalKey.includes('-----BEGIN');
+      const ends = finalKey.includes('-----END');
+      
+      // If we don't have proper PEM format, try to fix it
+      if (!begins || !ends) {
+        console.log(`[PipelineRunner] Key is missing PEM markers: BEGIN=${begins}, END=${ends}`);
+        return false;
+      }
+      
+      // Generate a standardized key format with proper line breaks
+      // Split by newlines, filter empty lines, join with Unix line endings
+      const keyLines = finalKey.split(/\r?\n/).filter(line => line.trim() !== '');
+      
+      // Check if we have enough lines to form a valid key
+      if (keyLines.length < 3) {
+        console.log(`[PipelineRunner] Not enough lines in key: ${keyLines.length}`);
+        
+        // If we have a single long line, try to reformat it
+        if (keyLines.length === 1 && keyLines[0].length > 100) {
+          const line = keyLines[0];
+          const beginMatch = line.match(/(-----BEGIN [^-]+ -----)/);
+          const endMatch = line.match(/(-----END [^-]+ -----)/);
+          
+          if (beginMatch && endMatch) {
+            const beginHeader = beginMatch[1];
+            const endHeader = endMatch[1];
+            const contentBetween = line.substring(
+              line.indexOf(beginHeader) + beginHeader.length,
+              line.indexOf(endHeader)
+            ).trim();
+            
+            // Reformat to standard PEM structure with 64-char lines
+            const contentLines = [];
+            for (let i = 0; i < contentBetween.length; i += 64) {
+              contentLines.push(contentBetween.substring(i, i + 64));
+            }
+            
+            finalKey = [
+              beginHeader,
+              ...contentLines,
+              endHeader
+            ].join('\n');
+            
+            console.log(`[PipelineRunner] Reformatted single-line key to ${contentLines.length + 2} lines`);
+          }
+        }
+      } else {
+        // Rebuild the key with proper line endings
+        finalKey = keyLines.join('\n');
+        console.log(`[PipelineRunner] Normalized key line endings (${keyLines.length} lines)`);
+      }
+      
+      // Add final newline
+      if (!finalKey.endsWith('\n')) {
+        finalKey += '\n';
+      }
+      
+      // Try multiple methods to write the file
+      let writeSuccess = false;
+      
+      try {
+        // Make sure the key looks valid - check the beginning of the key
+        if (!finalKey.trim().startsWith('-----BEGIN')) {
+          console.log(`[PipelineRunner] Key doesn't start with proper BEGIN marker`);
+          return false;
+        }
+        
+        // First try synchronous write - most reliable
+        console.log(`[PipelineRunner] Writing SSH key to ${keyPath} (synchronous)`);
+        fs.writeFileSync(keyPath, finalKey, { mode: 0o600 });
+        writeSuccess = true;
+      } catch (syncWriteError) {
+        console.log(`[PipelineRunner] Error in sync write: ${syncWriteError.message}`);
+        
+        // Fallback to async write
+        try {
+          console.log(`[PipelineRunner] Trying async write instead`);
+          await fsPromises.writeFile(keyPath, finalKey, { mode: 0o600 });
+          writeSuccess = true;
+        } catch (asyncWriteError) {
+          console.log(`[PipelineRunner] Error in async write: ${asyncWriteError.message}`);
+        }
+      }
+      
+      if (!writeSuccess) {
+        console.log(`[PipelineRunner] Failed to write SSH key file`);
+        return false;
+      }
+      
+      // Ensure the permissions are set correctly (sometimes mode in writeFile doesn't work)
+      try {
+        fs.chmodSync(keyPath, 0o600);
+        console.log(`[PipelineRunner] Set 0600 permissions on key file`);
+      } catch (chmodError) {
+        console.log(`[PipelineRunner] Error setting permissions: ${chmodError.message}`);
+      }
+      
+      // Verify the file exists
+      if (!existsSync(keyPath)) {
+        console.log(`[PipelineRunner] Key file doesn't exist after writing`);
+        return false;
+      }
+      
+      // Check file size
+      try {
+        const stats = statSync(keyPath);
+        console.log(`[PipelineRunner] Key file size: ${stats.size} bytes`);
+        
+        if (stats.size < 100) {
+          console.log(`[PipelineRunner] Warning: Key file is suspiciously small`);
+        }
+      } catch (statError) {
+        console.log(`[PipelineRunner] Error checking file stats: ${statError.message}`);
+      }
+      
+      // Read back the file to verify contents
+      try {
+        const keyContent = fs.readFileSync(keyPath, 'utf8');
+        const keyContentLines = keyContent.split('\n').filter(line => line.trim() !== '');
+        
+        console.log(`[PipelineRunner] Read back key file: ${keyContent.length} chars, ${keyContentLines.length} lines`);
+        
+        if (keyContentLines.length < 3) {
+          console.log(`[PipelineRunner] Warning: Key file has too few lines (${keyContentLines.length})`);
+        }
+        
+        // Check first and last line
+        const firstLine = keyContentLines[0] || '';
+        const lastLine = keyContentLines[keyContentLines.length - 1] || '';
+        
+        console.log(`[PipelineRunner] First line: ${firstLine}`);
+        console.log(`[PipelineRunner] Last line: ${lastLine}`);
+        
+        if (!firstLine.includes('BEGIN') || !lastLine.includes('END')) {
+          console.log(`[PipelineRunner] Warning: Key file is missing proper BEGIN/END markers`);
+        }
+
+        // Add direct debug using OpenSSH command to check key format
+        try {
+          console.log('[PipelineRunner] Directly testing key with OpenSSH...');
+          const sshKeygenCheck = execSync(`ssh-keygen -l -f "${keyPath}"`, { stdio: 'pipe', encoding: 'utf8' });
+          console.log(`[PipelineRunner] Key appears valid according to ssh-keygen: ${sshKeygenCheck.trim()}`);
+        } catch (sshKeygenError) {
+          console.log(`[PipelineRunner] ssh-keygen could not validate key: ${sshKeygenError.message}`);
+          
+          // Show the actual file content for debugging
+          console.log('[PipelineRunner] Key file content (first 100 chars):');
+          console.log(keyContent.substring(0, 100) + '...');
+          
+          // Try validating the key with OpenSSL
+          try {
+            execSync(`openssl rsa -in "${keyPath}" -check -noout`, { stdio: 'pipe' });
+            console.log('[PipelineRunner] OpenSSL reports key is valid');
+          } catch (opensslError) {
+            console.log(`[PipelineRunner] OpenSSL validation failed: ${opensslError.message}`);
+            
+            // Try to repair the key if possible
+            try {
+              // Create a backup of the original key
+              fs.copyFileSync(keyPath, `${keyPath}.bak`);
+              console.log(`[PipelineRunner] Created backup of key file at ${keyPath}.bak`);
+              
+              // Try to directly generate a new key file with original key content
+              const tempKeyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'repair-key-'));
+              const tempKeyPath = path.join(tempKeyDir, 'key.pem');
+              
+              // Write the key with explicit headers to ensure format
+              const keyContent = [
+                "-----BEGIN RSA PRIVATE KEY-----",
+                ...finalKey.replace(/^-----(BEGIN|END)[^-]+-----/gm, '').split(/\s+/).filter(Boolean),
+                "-----END RSA PRIVATE KEY-----"
+              ].join('\n');
+              
+              fs.writeFileSync(tempKeyPath, keyContent, { mode: 0o600 });
+              console.log(`[PipelineRunner] Attempted to repair key in ${tempKeyPath}`);
+              
+              // Test if the repaired key works
+              try {
+                execSync(`ssh-keygen -l -f "${tempKeyPath}"`, { stdio: 'pipe' });
+                console.log('[PipelineRunner] Repaired key appears valid, using it instead');
+                
+                // Replace the original key with the repaired one
+                fs.copyFileSync(tempKeyPath, keyPath);
+              } catch (repairError) {
+                console.log(`[PipelineRunner] Repair attempt failed: ${repairError.message}`);
+              } finally {
+                // Clean up temp files
+                fs.rmSync(tempKeyDir, { recursive: true, force: true });
+              }
+            } catch (repairAttemptError) {
+              console.log(`[PipelineRunner] Error during repair attempt: ${repairAttemptError.message}`);
+            }
+          }
+        }
+      } catch (readError) {
+        console.log(`[PipelineRunner] Error reading back key file: ${readError.message}`);
+      }
+      
+      // As a final check, verify the key with ssh-keygen
+      try {
+        // Use -l to list the key fingerprint (validates the key format)
+        const keyInfo = execSync(`ssh-keygen -l -f "${keyPath}"`, { encoding: 'utf8' });
+        console.log(`[PipelineRunner] Key validated with ssh-keygen: ${keyInfo.trim()}`);
+      } catch (keygenError) {
+        console.log(`[PipelineRunner] Warning: ssh-keygen couldn't validate key: ${keygenError.message || 'unknown error'}`);
+        
+        // Try again with different parameters
+        try {
+          const keyTest = execSync(`ssh-keygen -y -f "${keyPath}"`, { encoding: 'utf8' });
+          if (keyTest.includes('ssh-rsa')) {
+            console.log(`[PipelineRunner] Key validated with ssh-keygen -y`);
+          } else {
+            console.log(`[PipelineRunner] Key validation returned unexpected output: ${keyTest.substring(0, 50)}...`);
+          }
+        } catch (alternateSshKeygenError) {
+          console.log(`[PipelineRunner] Key failed second validation: ${alternateSshKeygenError.message || 'unknown error'}`);
+          
+          // If validation fails, this is likely a corrupted key
+          console.log(`[PipelineRunner] This may indicate a corrupted SSH key file`);
+          return false; // Changed to return false on validation failure
+        }
+      }
+      
+      console.log(`[PipelineRunner] SSH key processing completed successfully (from ${source})`);
+      return true;
+    } catch (error) {
+      console.log(`[PipelineRunner] Error processing SSH key: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Retrieve SSH key information from a deployment or metadata
+   */
+  private async retrieveSshKeyInfo(
+    pipelineId: string,
+    deploymentConfig: any,
+    deployment?: any
+  ): Promise<{ keyName: string, keyPath?: string, encodedKey?: string }> {
+    try {
+      let keyName = '';
+      let keyPath: string | undefined;
+      let encodedKey: string | undefined;
+      
+      // Check if we have a deployment with sshKeyId
+      if (deployment?.sshKeyId) {
+        try {
+          const key = await this.sshKeyService.getKeyById(deployment.sshKeyId);
+          if (key) {
+            console.log(`[PipelineRunnerService] Using SSH key from deployment: ${key.keyPairName}`);
+            keyName = key.keyPairName;
+            
+            // Use the content from the key for encoded content
+            if (key.content) {
+              encodedKey = Buffer.from(key.content).toString('base64');
+            }
+            
+            // Write the key to a file
+            keyPath = await this.sshKeyService.writeKeyToFile(key.keyPairName, key.content);
+            return { keyName, keyPath, encodedKey };
+          }
+        } catch (error) {
+          console.log(`[PipelineRunnerService] Error retrieving key by ID: ${error.message}`);
+        }
+      }
+      
+      // Check if we have a deployment with key metadata
+      if (deployment?.metadata && typeof deployment.metadata === 'object') {
+        const metadata = deployment.metadata as any;
+        if (metadata.keyName) {
+          keyName = metadata.keyName;
+          console.log(`[PipelineRunnerService] Found key name in deployment metadata: ${keyName}`);
+          
+          // Try to find the key in our database
+          const key = await this.sshKeyService.getKeyByPairName(keyName);
+          if (key) {
+            console.log(`[PipelineRunnerService] Found key in database: ${keyName}`);
+            encodedKey = key.encodedContent;
+            keyPath = await this.sshKeyService.writeKeyToFile(keyName, key.content);
+            return { keyName, keyPath, encodedKey };
+          }
+          
+          // Try to find the key in the file system as fallback
+          if (metadata.keyPath) {
+            keyPath = metadata.keyPath;
+            if (fs.existsSync(keyPath)) {
+              console.log(`[PipelineRunnerService] Found key at path: ${keyPath}`);
+              
+              // Store the key in our database for future use
+              try {
+                const keyContent = fs.readFileSync(keyPath, 'utf8');
+                const encodedContent = Buffer.from(keyContent).toString('base64');
+                
+                await this.sshKeyService.createKey({
+                  name: keyName,
+                  content: keyContent,
+                  keyPairName: keyName
+                });
+                console.log(`[PipelineRunnerService] Added key ${keyName} to database for future use`);
+                
+                encodedKey = encodedContent;
+              } catch (storeError) {
+                console.log(`[PipelineRunnerService] Could not store key in database: ${storeError.message}`);
+                // Continue anyway, this is just an optimization
+              }
+              
+              return { keyName, keyPath, encodedKey };
+            } else {
+              console.log(`[PipelineRunnerService] Key path not found: ${keyPath}`);
+            }
+          }
+        }
+      }
+      
+      // Check if we have a key name in the deployment config
+      if (deploymentConfig?.keyName) {
+        keyName = deploymentConfig.keyName;
+        console.log(`[PipelineRunnerService] Using key name from deployment config: ${keyName}`);
+        
+        // Try to find the key in our database
+        const key = await this.sshKeyService.getKeyByPairName(keyName);
+        if (key) {
+          console.log(`[PipelineRunnerService] Found key in database: ${keyName}`);
+          encodedKey = key.encodedContent;
+          keyPath = await this.sshKeyService.writeKeyToFile(keyName, key.content);
+          return { keyName, keyPath, encodedKey };
+        }
+        
+        // Fall back to the original file system lookup
+        const homeDir = process.env.HOME || process.env.USERPROFILE || '/tmp';
+        const sshDir = path.join(homeDir, '.ssh');
+        const possibleKeyPaths = [
+          path.join(sshDir, keyName),
+          path.join(sshDir, `${keyName}.pem`),
+          path.join(sshDir, 'id_rsa'),
+          path.join(process.cwd(), `${keyName}.pem`),
+          `/etc/ssh/keys/${keyName}.pem`
+        ];
+        
+        for (const kPath of possibleKeyPaths) {
+          try {
+            if (fs.existsSync(kPath)) {
+              keyPath = kPath;
+              console.log(`[PipelineRunnerService] Found key at: ${keyPath}`);
+              
+              // Store the key in our database for future use
+              try {
+                const keyContent = fs.readFileSync(kPath, 'utf8');
+                const encodedContent = Buffer.from(keyContent).toString('base64');
+                
+                await this.sshKeyService.createKey({
+                  name: keyName,
+                  content: keyContent,
+                  keyPairName: keyName
+                });
+                console.log(`[PipelineRunnerService] Added key ${keyName} to database for future use`);
+                
+                encodedKey = encodedContent;
+              } catch (storeError) {
+                console.log(`[PipelineRunnerService] Could not store key in database: ${storeError.message}`);
+                // Continue anyway, this is just an optimization
+              }
+              
+              break;
+            }
+          } catch (e) {
+            // File doesn't exist or can't be accessed, continue checking
+          }
+        }
+      }
+      
+      if (!keyName) {
+        console.log(`[PipelineRunnerService] No SSH key information found for pipeline ${pipelineId}`);
+      }
+      
+      return { keyName, keyPath, encodedKey };
+    } catch (error) {
+      console.error(`[PipelineRunnerService] Error retrieving SSH key info: ${error.message}`);
+      return { keyName: '' };
+    }
   }
 }

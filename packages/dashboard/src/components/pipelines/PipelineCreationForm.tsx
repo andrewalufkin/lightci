@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
@@ -27,9 +27,10 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { GripVertical, Terminal } from 'lucide-react';
+import { GripVertical, Terminal, AlertCircle } from 'lucide-react';
 import { Textarea } from '@/components/ui/textarea';
-import { api } from '@/services/api';
+import { api } from '@/lib/api';
+import { useToast } from "@/components/ui/use-toast";
 
 interface BlueGreenConfig {
   productionPort: number;
@@ -107,32 +108,32 @@ const templateSteps: Record<string, PipelineStep[]> = {
       id: 'deployment',
       name: 'Deployment',
       description: 'Deploy application to target environment',
-      command: 'npm install -g pm2 && pkill -f "node.*src/server.js" || true && npm install && pm2 delete all || true && pm2 start npm --name "app" -- start && pm2 save',
+      command: 'bash -c "curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash - && sudo yum install -y nodejs && sudo npm install -g pm2 && pkill -f \\"node.*src/server.js\\" || true && npm install && pm2 delete all || true && pm2 start npm --name \\"app\\" -- start && pm2 save"',
       type: 'deploy',
       automatic: true,
       runOnDeployedInstance: true,
     },
   ],
-  rust: [
+  react: [
     {
       id: 'build',
       name: 'Build',
-      description: 'Compile Rust project',
-      command: 'cargo build --release',
+      description: 'Build React application',
+      command: 'npm install && npm run build',
       type: 'build',
     },
     {
       id: 'test',
       name: 'Test',
       description: 'Run test suite',
-      command: 'cargo test',
+      command: 'npm test -- --watchAll=false',
       type: 'test',
     },
     {
       id: 'deployment',
       name: 'Deployment',
-      description: 'Deploy application to target environment',
-      command: './target/release/app',
+      description: 'Deploy React app to hosting environment',
+      command: 'bash -c "curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash - && sudo yum install -y nodejs && sudo npm install -g pm2 && cd /home/ec2-user/app && npm install && echo \'Starting React application...\' && pm2 delete all || true && pm2 start npm --name \\"react-app\\" -- start && pm2 save"',
       type: 'deploy',
       automatic: true,
       runOnDeployedInstance: true,
@@ -277,20 +278,57 @@ interface StepFormData {
 
 const defaultArtifactPatterns: Record<string, ArtifactPattern[]> = {
   nodejs: [
-    { pattern: 'dist/**', description: 'Distribution files' },
-    { pattern: 'build/**', description: 'Build output' }
+    { pattern: 'dist/**/*', description: 'Distribution files' },
+    { pattern: 'build/**/*', description: 'Build output' },
+    { pattern: 'node_modules/.bin/*', description: 'Node binary executables' },
+    { pattern: 'package.json', description: 'Package configuration' },
+    { pattern: 'package-lock.json', description: 'Lock file' },
+    { pattern: 'yarn.lock', description: 'Yarn lock file' },
+    { pattern: 'src/**/*.js', description: 'JavaScript source files' },
+    { pattern: 'src/**/*.ts', description: 'TypeScript source files' },
+    { pattern: 'config/**/*', description: 'Configuration files' }
+  ],
+  react: [
+    { pattern: 'build/**/*', description: 'React build output' },
+    { pattern: 'public/**/*', description: 'Public assets' },
+    { pattern: 'package.json', description: 'Package configuration' },
+    { pattern: 'package-lock.json', description: 'Lock file' },
+    { pattern: 'yarn.lock', description: 'Yarn lock file' },
+    { pattern: 'src/**/*.js', description: 'JavaScript source files' },
+    { pattern: 'src/**/*.jsx', description: 'React JSX files' },
+    { pattern: 'src/**/*.ts', description: 'TypeScript source files' },
+    { pattern: 'src/**/*.tsx', description: 'React TSX files' },
+    { pattern: 'src/**/*.css', description: 'CSS files' },
+    { pattern: 'src/**/*.scss', description: 'SCSS files' },
+    { pattern: 'node_modules/.bin/*', description: 'Node binary executables' }
+  ],
+  docker: [
+    { pattern: 'Dockerfile', description: 'Docker build file' },
+    { pattern: 'docker-compose.yml', description: 'Docker Compose configuration' },
+    { pattern: '.dockerignore', description: 'Docker ignore file' },
+    { pattern: 'package.json', description: 'Package configuration' },
+    { pattern: 'app/**/*', description: 'Application files' },
+    { pattern: 'dist/**/*', description: 'Distribution files' },
+    { pattern: 'build/**/*', description: 'Build output' }
   ],
   java: [
-    { pattern: 'target/*.jar', description: 'JAR files' },
-    { pattern: 'target/*.war', description: 'WAR files' }
+    { pattern: 'target/**/*.jar', description: 'JAR files' },
+    { pattern: 'target/**/*.war', description: 'WAR files' },
+    { pattern: 'pom.xml', description: 'Maven configuration' },
+    { pattern: 'build.gradle', description: 'Gradle configuration' },
+    { pattern: 'src/**/*.java', description: 'Java source files' },
+    { pattern: 'src/**/*.properties', description: 'Properties files' },
+    { pattern: 'src/main/resources/**/*', description: 'Resource files' }
   ],
   python: [
-    { pattern: 'dist/*.whl', description: 'Wheel packages' },
-    { pattern: 'dist/*.tar.gz', description: 'Source distributions' }
-  ],
-  go: [
-    { pattern: 'bin/*', description: 'Binary files' },
-    { pattern: 'build/*', description: 'Build artifacts' }
+    { pattern: 'dist/**/*', description: 'Distribution packages' },
+    { pattern: 'build/**/*', description: 'Build artifacts' },
+    { pattern: '**/*.py', description: 'Python source files' },
+    { pattern: 'requirements.txt', description: 'Dependencies' },
+    { pattern: 'setup.py', description: 'Package configuration' },
+    { pattern: 'pyproject.toml', description: 'Project configuration' },
+    { pattern: 'Pipfile', description: 'Pipenv configuration' },
+    { pattern: 'Pipfile.lock', description: 'Pipenv lock file' }
   ]
 };
 
@@ -466,8 +504,43 @@ const SortableStepItem: React.FC<SortableStepItemProps> = ({
   );
 };
 
+// Add a list of dangerous command patterns to check in the UI
+const DANGEROUS_COMMAND_PATTERNS = [
+  /:\(\)\s*{\s*:\|\s*:\s*&\s*}\s*;:/i,             // Fork bombs
+  /\(\)\s*{\s*\|\s*&\s*};\s*\(\)/i,                
+  /\brm\s+(-rf?|--recursive|--force)\s+[\/\*]/i,   // Destructive filesystem commands
+  /\bmkfs\b/i,                                     
+  /\bdd\b.*if=.*of=\/dev\/(hd|sd|mmcblk)/i,        
+  /\bchmod\s+-R\s+777\s+\//i,                      
+  /\bsudo\b|\bsu\b|\bdoas\b/,                      // Privilege escalation
+  /\bcurl\b.*\|\s*(bash|sh)|wget.*\|\s*(bash|sh)/  // Script download and execution
+];
+
+/**
+ * Validates a command for potentially dangerous patterns
+ * @param command The command to validate
+ * @returns An object with isValid flag and message if invalid
+ */
+const validateCommand = (command: string): { isValid: boolean; message?: string } => {
+  if (!command.trim()) {
+    return { isValid: false, message: "Command cannot be empty" };
+  }
+  
+  for (const pattern of DANGEROUS_COMMAND_PATTERNS) {
+    if (pattern.test(command)) {
+      return { 
+        isValid: false, 
+        message: "This command appears to be potentially dangerous and may be blocked by the system" 
+      };
+    }
+  }
+  
+  return { isValid: true };
+};
+
 const PipelineCreationForm = () => {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [formData, setFormData] = useState<PipelineFormData>({
     repositoryUrl: '',
     branch: 'main',
@@ -552,6 +625,9 @@ const PipelineCreationForm = () => {
     })
   );
 
+  // Add state for command validation
+  const [commandValidation, setCommandValidation] = useState<{ isValid: boolean; message?: string }>({ isValid: true });
+
   const handleInputChange = (field: keyof PipelineFormData, value: string) => {
     setFormData((prev) => {
       const newFormData = { ...prev, [field]: value };
@@ -621,9 +697,61 @@ const PipelineCreationForm = () => {
       ...otherSteps
     ];
     
+    // Get template-specific artifact patterns
+    let artifactPatterns = defaultArtifactPatterns[templateName] || [];
+    
+    // Add common patterns that should be included for all template types
+    const commonPatterns = [
+      { pattern: 'package.json', description: 'NPM package configuration' },
+      { pattern: 'package-lock.json', description: 'NPM dependencies lock file' },
+      { pattern: 'yarn.lock', description: 'Yarn dependencies lock file' },
+      { pattern: '**/*.json', description: 'JSON configuration files' },
+      { pattern: 'config/**/*', description: 'Configuration files' }
+    ];
+    
+    // Add template-specific patterns
+    if (templateName === 'nodejs') {
+      artifactPatterns = [
+        ...artifactPatterns,
+        ...commonPatterns,
+        { pattern: 'src/**/*.js', description: 'JavaScript source files' },
+        { pattern: 'src/**/*.ts', description: 'TypeScript source files' },
+        { pattern: 'node_modules/.bin/*', description: 'Node binary executables' }
+      ];
+    } else if (templateName === 'react') {
+      artifactPatterns = [
+        ...artifactPatterns,
+        ...commonPatterns,
+        { pattern: 'src/**/*.js', description: 'JavaScript source files' },
+        { pattern: 'src/**/*.jsx', description: 'React JSX files' },
+        { pattern: 'src/**/*.ts', description: 'TypeScript source files' },
+        { pattern: 'src/**/*.tsx', description: 'React TSX files' },
+        { pattern: 'src/**/*.css', description: 'CSS files' },
+        { pattern: 'src/**/*.scss', description: 'SCSS files' },
+        { pattern: 'public/**/*', description: 'Public assets' }
+      ];
+    } else if (templateName === 'docker') {
+      artifactPatterns = [
+        ...artifactPatterns,
+        { pattern: 'Dockerfile', description: 'Docker build file' },
+        { pattern: 'docker-compose.yml', description: 'Docker Compose configuration' },
+        { pattern: '.dockerignore', description: 'Docker ignore file' }
+      ];
+    }
+    
+    // Remove duplicates by pattern
+    const uniquePatterns = Array.from(
+      new Map(artifactPatterns.map(item => [item.pattern, item])).values()
+    );
+    
     setFormData((prev) => ({
       ...prev,
       steps: orderedSteps,
+      artifacts: {
+        ...prev.artifacts,
+        enabled: true, // Enable artifacts by default
+        patterns: uniquePatterns
+      }
     }));
   };
 
@@ -656,7 +784,27 @@ const PipelineCreationForm = () => {
     setIsStepDialogOpen(true);
   };
 
+  // Validate command when it changes
+  useEffect(() => {
+    if (stepForm.command) {
+      setCommandValidation(validateCommand(stepForm.command));
+    } else {
+      setCommandValidation({ isValid: true });
+    }
+  }, [stepForm.command]);
+
   const handleStepSubmit = () => {
+    // Validate command before adding/updating step
+    const validation = validateCommand(stepForm.command);
+    if (!validation.isValid) {
+      toast({
+        title: "Invalid Command",
+        description: validation.message,
+        variant: "destructive",
+      });
+      return;
+    }
+    
     if (editingStep) {
       // Don't allow editing automatic steps
       if (editingStep.automatic) {
@@ -720,6 +868,36 @@ const PipelineCreationForm = () => {
       deployment
     } = formData;
 
+    // Check if any step includes a command that references a frontend directory
+    // This indicates the repository likely has a frontend subfolder structure
+    const hasFrontendDirectory = steps.some(step => 
+      step.command.includes('cd frontend') || 
+      step.command.includes('cd ./frontend') ||
+      step.command.includes('cd ../frontend')
+    );
+
+    // Create base artifact patterns from the form
+    const baseArtifactPatterns = artifacts.patterns.map(p => p.pattern);
+    
+    // Add frontend-specific patterns if the repository has a frontend directory
+    const artifactPatterns = hasFrontendDirectory ? [
+      ...baseArtifactPatterns,
+      'frontend/package.json',
+      'frontend/package-lock.json',
+      'frontend/yarn.lock',
+      'frontend/build/**/*',
+      'frontend/dist/**/*',
+      'frontend/public/**/*',
+      'frontend/src/**/*.js',
+      'frontend/src/**/*.jsx',
+      'frontend/src/**/*.ts',
+      'frontend/src/**/*.tsx',
+      'frontend/src/**/*.css'
+    ] : baseArtifactPatterns;
+
+    // Remove duplicate patterns
+    const uniqueArtifactPatterns = [...new Set(artifactPatterns)];
+
     return {
       name,
       repository: repositoryUrl,
@@ -739,7 +917,7 @@ const PipelineCreationForm = () => {
       },
       githubToken,
       artifactsEnabled: artifacts.enabled,
-      artifactPatterns: artifacts.patterns.map(p => p.pattern),
+      artifactPatterns: uniqueArtifactPatterns,
       artifactRetentionDays: artifacts.retention.defaultDays,
       artifactStorageType: artifacts.storage.type === 'aws_s3' ? 's3' : 'local',
       artifactStorageConfig: {
@@ -1152,17 +1330,17 @@ const PipelineCreationForm = () => {
                     onClick={() => handleTemplateSelect('nodejs')}
                   >
                     <CardHeader className="p-4">
-                      <CardTitle className="text-sm">Node.js Build</CardTitle>
-                      <CardDescription className="text-xs">Build, test, and deploy Node.js apps</CardDescription>
+                      <CardTitle className="text-sm">Node.js API</CardTitle>
+                      <CardDescription className="text-xs">Build, test, and deploy Node.js API services</CardDescription>
                     </CardHeader>
                   </Card>
                   <Card 
                     className="cursor-pointer hover:border-blue-500 transition-all"
-                    onClick={() => handleTemplateSelect('rust')}
+                    onClick={() => handleTemplateSelect('react')}
                   >
                     <CardHeader className="p-4">
-                      <CardTitle className="text-sm">Rust Project</CardTitle>
-                      <CardDescription className="text-xs">Cargo build, test, and binary creation</CardDescription>
+                      <CardTitle className="text-sm">React App</CardTitle>
+                      <CardDescription className="text-xs">Build, test, and deploy React applications</CardDescription>
                     </CardHeader>
                   </Card>
                   <Card 
@@ -1868,12 +2046,24 @@ const PipelineCreationForm = () => {
                   value={stepForm.command}
                   onChange={(e) => setStepForm(prev => ({ ...prev, command: e.target.value }))}
                   placeholder="Command to execute"
+                  className={!commandValidation.isValid ? "border-red-500" : ""}
                 />
+                {!commandValidation.isValid && (
+                  <div className="text-red-500 text-xs mt-1">
+                    <span className="flex items-center gap-1">
+                      <AlertCircle className="h-3 w-3" />
+                      {commandValidation.message}
+                    </span>
+                  </div>
+                )}
+                <div className="text-xs text-muted-foreground mt-1">
+                  Enter shell commands to execute. Dangerous commands like fork bombs, system modifications, and privilege escalation attempts will be blocked.
+                </div>
               </div>
             </div>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={handleStepSubmit}>
+              <AlertDialogAction onClick={handleStepSubmit} disabled={!commandValidation.isValid}>
                 {editingStep ? 'Save Changes' : 'Add Step'}
               </AlertDialogAction>
             </AlertDialogFooter>

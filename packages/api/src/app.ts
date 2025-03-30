@@ -15,6 +15,9 @@ import authRouter from './routes/auth.routes.js';
 import userRouter from './routes/user.js';
 import billingRouter from './routes/billing.js';
 import stripeRouter from './routes/stripe.js';
+import deployedAppsRouter from './routes/deployed-apps.js';
+import domainsRouter from './routes/domains.js';
+import { sshKeyRouter } from './routes/ssh-keys.js';
 import { AuthenticationError, NotFoundError, ValidationError } from './utils/errors.js';
 import { scheduleArtifactCleanup, stopArtifactCleanup } from './services/artifact-cleanup.service.js';
 import { PipelineStateService } from './services/pipeline-state.service.js';
@@ -22,6 +25,8 @@ import { SchedulerService } from './services/scheduler.service.js';
 import { PipelineRunnerService } from './services/pipeline-runner.service.js';
 import { WorkspaceService } from './services/workspace.service.js';
 import { EngineService } from './services/engine.service.js';
+import { SshKeyService } from './services/ssh-key.service.js';
+import { PrismaClient } from '@prisma/client';
 
 const app = express();
 const pipelineStateService = new PipelineStateService();
@@ -48,15 +53,24 @@ const initializeApp = async () => {
   app.use(express.json());
   
   workspaceService = new WorkspaceService();
-  pipelineRunnerService = new PipelineRunnerService(workspaceService);
-  schedulerService = new SchedulerService(pipelineRunnerService);
   engineService = new EngineService(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
+  
+  // Initialize services with proper dependencies
+  const prismaClient = new PrismaClient();
+  const sshKeyService = new SshKeyService(prismaClient);
+  pipelineRunnerService = new PipelineRunnerService(
+    prismaClient,
+    engineService,
+    workspaceService,
+    sshKeyService
+  );
+  schedulerService = new SchedulerService(pipelineRunnerService);
 
   // Skip service initialization in test mode to prevent hanging
   if (process.env.NODE_ENV !== 'test') {
     // Initialize services
     scheduleArtifactCleanup();
-    schedulerService.initialize().catch(error => {
+    await schedulerService.initialize().catch(error => {
       console.error('Failed to initialize scheduler service:', error);
     });
     pipelineStateService.startMonitoring();
@@ -73,6 +87,14 @@ const initializeApp = async () => {
   app.use('/api/user', userRouter);
   app.use('/api/billing', billingRouter);
   app.use('/api/stripe', stripeRouter);
+  app.use('/api/deployed-apps', deployedAppsRouter);
+  app.use('/api/domains', domainsRouter);
+  app.use('/api/ssh-keys', sshKeyRouter);
+
+  // Error handling middleware
+  app.use(errorHandler as ErrorRequestHandler);
+
+  return app;
 };
 
 // Handle graceful shutdown
@@ -130,15 +152,10 @@ const errorHandler = (
   return res.status(500).json({ error: 'Internal server error' });
 };
 
-app.use(errorHandler as ErrorRequestHandler);
-
 // Initialize the app and export it
-const appPromise = (async () => {
-  await initializeApp().catch(error => {
-    console.error('Failed to initialize app:', error);
-    process.exit(1);
-  });
-  return app;
-})();
+const appPromise = initializeApp().catch(error => {
+  console.error('Failed to initialize app:', error);
+  process.exit(1);
+});
 
 export default appPromise;

@@ -19,7 +19,7 @@ import { Badge } from '@/components/ui/badge';
 import { Download, Folder, File, AlertCircle } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { formatBytes } from '@/lib/utils';
-import { api } from '@/services/api';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 
 interface Artifact {
@@ -48,8 +48,8 @@ export function BuildArtifacts({ buildId }: BuildArtifactsProps) {
   const fetchArtifacts = async () => {
     try {
       setLoading(true);
-      const data = await api.listBuildArtifacts(buildId);
-      setArtifacts(data);
+      const response = await api.listBuildArtifacts(buildId);
+      setArtifacts(response.artifacts || []);
     } catch (err) {
       console.error('Error fetching artifacts:', err);
       setError(err instanceof Error ? err.message : 'Failed to load artifacts');

@@ -294,8 +294,6 @@ export class PipelineRunController {
         updateData.completedAt = new Date();
       }
       
-      console.log(`[PipelineRunController] Updating run ${id} in database with status ${status}`);
-      
       // Update the run in the database
       const updatedRun = await prisma.pipelineRun.update({
         where: { id },

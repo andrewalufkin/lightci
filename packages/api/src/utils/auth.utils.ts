@@ -1,4 +1,4 @@
-import * as bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 
@@ -40,7 +40,6 @@ export function generateJWT(user: { id: string; email: string; username?: string
   
   // Log the payload and secret (partially)
   console.log(`JWT payload: ${JSON.stringify(payload)}`);
-  console.log(`Using JWT secret: ${JWT_SECRET.substring(0, 5)}...`);
   
   try {
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
@@ -53,10 +52,8 @@ export function generateJWT(user: { id: string; email: string; username?: string
 }
 
 export function verifyJWT(token: string): JWTPayload {
-  console.log(`Verifying JWT: ${token ? token.substring(0, 10) + '...' : 'undefined'}`);
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as JWTPayload;
-    console.log(`Decoded JWT payload: ${JSON.stringify(decoded)}`);
     return decoded;
   } catch (error) {
     console.error('Error verifying JWT:', error);

@@ -8,33 +8,34 @@ datasource db {
 }
 
 model Pipeline {
-  id                    String        @id @default(uuid())
+  id                    String           @id @default(uuid())
   name                  String
   description           String?
   repository            String
-  defaultBranch         String        @map("default_branch")
-  steps                 Json          @default("[]")
-  triggers              Json?         @default("{}")
-  schedule              Json?         @default("{}")
-  status                String        @default("created")
-  createdAt             DateTime      @default(now()) @map("created_at")
-  updatedAt             DateTime      @updatedAt @map("updated_at")
-  artifactPatterns      Json?         @default("[]") @map("artifact_patterns")
-  artifactRetentionDays Int           @default(30) @map("artifact_retention_days")
-  artifactStorageConfig Json?         @default("{}") @map("artifact_storage_config")
-  artifactStorageType   String        @default("local") @map("artifact_storage_type")
-  artifactsEnabled      Boolean       @default(true) @map("artifacts_enabled")
-  deploymentConfig      Json?         @default("{}") @map("deployment_config")
-  deploymentEnabled     Boolean       @default(false) @map("deployment_enabled")
-  deploymentMode        String        @default("automatic") @map("deployment_mode")
-  deploymentPlatform    String?       @map("deployment_platform")
-  webhookConfig         Json?         @default("{}") @map("webhook_config")
-  createdById           String?       @map("created_by")
-  projectId             String?       @map("project_id")
+  defaultBranch         String           @map("default_branch")
+  steps                 Json             @default("[]")
+  triggers              Json?            @default("{}")
+  schedule              Json?            @default("{}")
+  status                String           @default("created")
+  createdAt             DateTime         @default(now()) @map("created_at")
+  updatedAt             DateTime         @updatedAt @map("updated_at")
+  artifactPatterns      Json?            @default("[]") @map("artifact_patterns")
+  artifactRetentionDays Int              @default(30) @map("artifact_retention_days")
+  artifactStorageConfig Json?            @default("{}") @map("artifact_storage_config")
+  artifactStorageType   String           @default("local") @map("artifact_storage_type")
+  artifactsEnabled      Boolean          @default(true) @map("artifacts_enabled")
+  deploymentConfig      Json?            @default("{}") @map("deployment_config")
+  deploymentEnabled     Boolean          @default(false) @map("deployment_enabled")
+  deploymentMode        String           @default("automatic") @map("deployment_mode")
+  deploymentPlatform    String?          @map("deployment_platform")
+  webhookConfig         Json?            @default("{}") @map("webhook_config")
+  createdById           String?          @map("created_by")
+  projectId             String?          @map("project_id")
   runs                  PipelineRun[]
-  createdBy             User?         @relation("CreatedBy", fields: [createdById], references: [id])
-  project               Project?      @relation(fields: [projectId], references: [id])
+  createdBy             User?            @relation("CreatedBy", fields: [createdById], references: [id])
+  project               Project?         @relation(fields: [projectId], references: [id])
   autoDeployments       AutoDeployment[]
+  deployedApps          DeployedApp[]
 
   @@map("pipelines")
 }
@@ -166,6 +167,7 @@ model Project {
   pipelines      Pipeline[]
   usageRecords   UsageRecord[]
   userOwners     UserProject[]
+  deployedApps   DeployedApp[]
 
   @@map("projects")
 }
@@ -255,17 +257,65 @@ model UsageRecord {
 }
 
 model AutoDeployment {
-  id         String   @id @default(uuid())
-  userId     String   @map("user_id")
-  instanceId String   @map("instance_id")
-  status     String   @default("active")
-  type       String   // Instance type (e.g., t2.micro, t2.medium)
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  instanceId String    @map("instance_id")
+  status     String    @default("active")
+  type       String // Instance type (e.g., t2.micro, t2.medium)
   region     String
-  createdAt  DateTime @default(now()) @map("created_at")
-  metadata   Json?    @default("{}")
-  user       User     @relation(fields: [userId], references: [id])
-  pipelineId String?  @map("pipeline_id")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  metadata   Json?     @default("{}")
+  user       User      @relation(fields: [userId], references: [id])
+  pipelineId String?   @map("pipeline_id")
   pipeline   Pipeline? @relation(fields: [pipelineId], references: [id])
+  sshKeyId   String?   @map("ssh_key_id")
+  sshKey     SshKey?   @relation(fields: [sshKeyId], references: [id])
 
   @@map("auto_deployments")
+}
+
+model SshKey {
+  id             String           @id @default(uuid())
+  name           String
+  content        String // Raw PEM content
+  encodedContent String           @map("encoded_content") // Base64 encoded PEM content
+  keyPairName    String           @map("key_pair_name") // Name of key pair in AWS
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+  deployments    AutoDeployment[]
+
+  @@map("ssh_keys")
+}
+
+model DeployedApp {
+  id           String   @id @default(uuid())
+  name         String
+  url          String
+  status       String   @default("running")
+  lastDeployed DateTime @default(now()) @map("last_deployed")
+  environment  String   @default("production")
+  projectId    String?  @map("project_id")
+  pipelineId   String   @map("pipeline_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  project      Project? @relation(fields: [projectId], references: [id])
+  pipeline     Pipeline @relation(fields: [pipelineId], references: [id])
+  domains      Domain[]
+
+  @@unique([pipelineId, environment])
+  @@map("deployed_apps")
+}
+
+model Domain {
+  id            String      @id @default(uuid())
+  domain        String      @unique
+  verified      Boolean     @default(false)
+  status        String      @default("pending") // pending, active, failed, deleted
+  verifyToken   String?     @map("verify_token")
+  deployedAppId String      @map("deployed_app_id")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+  deployedApp   DeployedApp @relation(fields: [deployedAppId], references: [id], onDelete: Cascade)
+
+  @@map("domains")
 }

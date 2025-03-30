@@ -274,15 +274,110 @@ export class PipelineService {
     }
 
     try {
-      // Delete all associated pipeline runs first
+      // Import required services for cleanup
+      const { InstanceProvisionerService } = await import('./instance-provisioner.service.js');
+      const { config } = await import('../config/config.js');
+      
+      // Find any active auto deployments for this pipeline
+      const autoDeployments = await this.prismaClient.autoDeployment.findMany({
+        where: { 
+          pipelineId: id,
+          status: 'active'
+        }
+      });
+      
+      // Clean up EC2 instances and update deployment records
+      if (autoDeployments.length > 0) {
+        console.log(`[PipelineService] Found ${autoDeployments.length} active deployments to clean up`);
+        
+        // Parse deployment config to get AWS credentials
+        let awsAccessKeyId = process.env.AWS_ACCESS_KEY_ID || '';
+        let awsSecretAccessKey = process.env.AWS_SECRET_ACCESS_KEY || '';
+        let region = process.env.AWS_DEFAULT_REGION || 'us-east-1';
+        
+        // Try to get credentials from pipeline config
+        if (existingPipeline.deploymentConfig) {
+          try {
+            const deploymentConfig = typeof existingPipeline.deploymentConfig === 'string' 
+              ? JSON.parse(existingPipeline.deploymentConfig) 
+              : existingPipeline.deploymentConfig;
+              
+            // Check for AWS credentials in various locations
+            awsAccessKeyId = deploymentConfig.awsAccessKeyId || 
+                            deploymentConfig.config?.awsAccessKeyId || 
+                            awsAccessKeyId;
+                            
+            awsSecretAccessKey = deploymentConfig.awsSecretAccessKey || 
+                                deploymentConfig.config?.awsSecretAccessKey || 
+                                awsSecretAccessKey;
+                                
+            region = deploymentConfig.region || 
+                    deploymentConfig.config?.region || 
+                    region;
+          } catch (error) {
+            console.error('[PipelineService] Error parsing deployment config:', error);
+          }
+        }
+        
+        // Create instance provisioner service with correct instance config
+        const instanceProvisioner = new InstanceProvisionerService(
+          this.prismaClient,
+          {
+            region,
+            imageId: 'ami-0889a44b331db0194',
+            keyName: '',
+            securityGroupIds: [],
+            subnetId: ''
+          },
+          awsAccessKeyId,
+          awsSecretAccessKey
+        );
+        
+        // Terminate each instance and update deployment records
+        for (const deployment of autoDeployments) {
+          try {
+            console.log(`[PipelineService] Terminating EC2 instance for deployment ${deployment.id}`);
+            await instanceProvisioner.terminateInstance(deployment.id);
+            console.log(`[PipelineService] Successfully terminated EC2 instance for deployment ${deployment.id}`);
+          } catch (error) {
+            console.error(`[PipelineService] Error terminating EC2 instance:`, error);
+            
+            // Even if EC2 termination fails, update the database record
+            const currentMetadata = deployment.metadata || {};
+            const updatedMetadata = {
+              ...(typeof currentMetadata === 'object' ? currentMetadata : {}),
+              terminatedAt: new Date().toISOString(),
+              terminatedBy: 'pipeline-deletion',
+              terminationError: error instanceof Error ? error.message : 'Unknown error'
+            };
+            
+            await this.prismaClient.autoDeployment.update({
+              where: { id: deployment.id },
+              data: {
+                status: 'terminated',
+                metadata: updatedMetadata
+              }
+            });
+          }
+        }
+      }
+      
+      // Clean up deployed app records
+      await this.prismaClient.deployedApp.deleteMany({
+        where: { pipelineId: id }
+      });
+      
+      // Delete all associated pipeline runs
       await this.prismaClient.pipelineRun.deleteMany({
         where: { pipelineId: id }
       });
 
-      // Then delete the pipeline
+      // Delete the pipeline
       await this.prismaClient.pipeline.delete({
         where: { id }
       });
+      
+      console.log(`[PipelineService] Successfully deleted pipeline ${id} with all associated resources`);
     } catch (error) {
       console.error(`[PipelineService] Error deleting pipeline:`, error);
       throw new Error('Failed to delete pipeline');

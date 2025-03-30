@@ -39,12 +39,12 @@ export default function BillingPage() {
     const fetchBillingData = async () => {
       try {
         const [usageResponse, storageResponse] = await Promise.all([
-          api.get('/user/billing/usage'),
-          api.get('/user/storage-limits')
+          api.getBillingUsage(),
+          api.getStorageLimits()
         ]);
         
-        setUsage(usageResponse.data as BillingUsage);
-        setStorageLimits(storageResponse.data as StorageLimits);
+        setUsage(usageResponse as BillingUsage);
+        setStorageLimits(storageResponse as StorageLimits);
       } catch (err) {
         setError('Failed to load billing information');
         console.error('Error fetching billing data:', err);

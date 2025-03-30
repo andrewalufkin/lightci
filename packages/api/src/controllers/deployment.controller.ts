@@ -66,7 +66,7 @@ export class DeploymentController {
       
       // Create deployment config from pipeline configuration
       const deploymentConfig: DeploymentConfig = {
-        platform: run.pipeline.deploymentMode === 'automatic' ? 'aws' : (run.pipeline.deploymentPlatform || 'custom'),
+        platform: run.pipeline.deploymentMode === 'automatic' ? 'aws_ec2' : (run.pipeline.deploymentPlatform || 'custom'),
         config: {
           ...(run.pipeline.deploymentConfig as Record<string, any> || {}),
           ...(run.pipeline.deploymentMode === 'automatic' ? {

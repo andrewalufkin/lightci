@@ -16,6 +16,9 @@ export function useCurrentPage() {
     case '/billing':
       page = 'Billing';
       break;
+    case '/deployed-apps':
+      page = 'Deployed Apps';
+      break;
     default:
       if (location.pathname.startsWith('/pipelines')) page = 'Pipelines';
       if (location.pathname.startsWith('/projects')) page = 'Projects';

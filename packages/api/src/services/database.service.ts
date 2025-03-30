@@ -65,8 +65,6 @@ export class DatabaseService {
   }
 
   async listPipelines(options: { page: number; limit: number; filter?: string; sort?: string; where?: any; }): Promise<PaginatedResult<DatabasePipeline>> {
-    console.log('[DatabaseService] Raw listPipelines input:', JSON.stringify(options, null, 2));
-    
     const where = {
       ...options.where,
       ...(options.filter ? {
@@ -77,7 +75,6 @@ export class DatabaseService {
         ]
       } : {})
     };
-    console.log('[DatabaseService] Constructed where clause:', JSON.stringify(where, null, 2));
 
     const skip = (options.page - 1) * options.limit;
     const [total, items] = await Promise.all([
@@ -89,7 +86,6 @@ export class DatabaseService {
         orderBy: { createdAt: 'desc' }
       })
     ]);
-    console.log('[DatabaseService] Raw query results:', JSON.stringify(items, null, 2));
 
     return {
       items: items.map(p => this.transformPipelineFromDb(p)),

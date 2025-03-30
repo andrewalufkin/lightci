@@ -3,19 +3,8 @@ import { Link } from 'react-router-dom';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { GitBranch, Play, Clock } from 'lucide-react';
-
-interface Pipeline {
-  id: string;
-  name: string;
-  repository: string;
-  defaultBranch: string;
-  description?: string;
-  lastRun?: string;
-  status?: 'success' | 'failed' | 'running' | 'pending';
-}
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-const API_KEY = import.meta.env.VITE_API_KEY;
+import { api } from '@/lib/api';
+import type { Pipeline } from '@/types/api';
 
 const PipelineList = () => {
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
@@ -25,19 +14,8 @@ const PipelineList = () => {
   useEffect(() => {
     const fetchPipelines = async () => {
       try {
-        const response = await fetch(`${API_URL}/api/pipelines`, {
-          headers: {
-            'Accept': 'application/json',
-            'x-api-key': API_KEY,
-          },
-        });
-
-        if (!response.ok) {
-          throw new Error('Failed to fetch pipelines');
-        }
-
-        const data = await response.json();
-        setPipelines(data.items || []);
+        const data = await api.listPipelines();
+        setPipelines(data.data || []);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'An error occurred');
         console.error('Error fetching pipelines:', err);
@@ -105,12 +83,10 @@ const PipelineList = () => {
                 <GitBranch className="h-4 w-4 mr-1" />
                 {pipeline.repository}
               </div>
-              {pipeline.lastRun && (
-                <div className="flex items-center">
-                  <Clock className="h-4 w-4 mr-1" />
-                  Last run: {pipeline.lastRun}
-                </div>
-              )}
+              <div className="flex items-center">
+                <Clock className="h-4 w-4 mr-1" />
+                Last updated: {new Date(pipeline.updatedAt).toLocaleString()}
+              </div>
             </div>
           </CardContent>
         </Card>

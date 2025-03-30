@@ -9,7 +9,7 @@ import Login from '@/pages/Login';
 import Register from '@/pages/Register';
 import { AuthProvider } from '@/lib/auth.context';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import { Toaster } from 'sonner';
+import { Toaster } from '@/components/ui/toaster';
 import { useAuth } from '@/lib/auth.context';
 import UserDashboard from './pages/UserDashboard';
 import BillingPage from '@/pages/BillingPage';
@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { ChevronDown } from 'lucide-react';
 import { useCurrentPage } from '@/lib/hooks/useCurrentPage';
+import DeployedApps from '@/pages/DeployedApps';
 
 function Header() {
   const { user, logout } = useAuth();
@@ -62,6 +63,9 @@ function Header() {
                     </DropdownMenuItem>
                     <DropdownMenuItem className="focus:bg-gray-100 focus:outline-none" asChild>
                       <Link to="/projects" className="w-full">Projects</Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem className="focus:bg-gray-100 focus:outline-none" asChild>
+                      <Link to="/deployed-apps" className="w-full">Deployed Apps</Link>
                     </DropdownMenuItem>
                     <DropdownMenuItem className="focus:bg-gray-100 focus:outline-none" asChild>
                       <Link to="/billing" className="w-full">Billing</Link>
@@ -110,7 +114,7 @@ function App() {
     <AuthProvider>
       <Router>
         <div className="relative min-h-screen bg-background">
-          <Toaster position="top-right" />
+          <Toaster />
           <Header />
           <main className="container mx-auto py-6">
             <Routes>
@@ -119,6 +123,14 @@ function App() {
               <Route path="/register" element={<Register />} />
 
               {/* Protected routes */}
+              <Route
+                path="/deployed-apps"
+                element={
+                  <ProtectedRoute>
+                    <DeployedApps />
+                  </ProtectedRoute>
+                }
+              />
               <Route
                 path="/projects"
                 element={

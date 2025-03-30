@@ -26,8 +26,6 @@ export const authenticate = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    console.log('Authenticate middleware called');
-    
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       console.log('No token provided or invalid format');
@@ -36,11 +34,8 @@ export const authenticate = async (
     }
     
     const token = authHeader.split(' ')[1];
-    console.log('Token received:', token ? `${token.substring(0, 10)}...` : 'undefined');
     
     try {
-      console.log('Using JWT secret:', `${JWT_SECRET.substring(0, 5)}...`);
-      
       // Verify the token using verifyJWT from auth.utils.js
       const decoded = verifyJWT(token);
       console.log('Token verified for user ID:', decoded.userId);
@@ -69,8 +64,6 @@ export const authenticate = async (
         res.status(401).json({ error: 'Account is not active' });
         return;
       }
-      
-      console.log('User authenticated successfully:', user.id);
       
       // Set the user on the request object with proper typing
       (req as AuthenticatedRequest).user = {

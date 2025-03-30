@@ -57,8 +57,6 @@ export class EngineService {
 
   async getPipeline(id: string): Promise<Pipeline | null> {
     try {
-      console.log(`[Engine] Looking up pipeline ${id} in database`);
-      
       // Get pipeline from database
       const dbPipeline = await prisma.pipeline.findUnique({
         where: { id },
@@ -77,7 +75,6 @@ export class EngineService {
       });
 
       if (!dbPipeline) {
-        console.log(`[Engine] Pipeline ${id} not found in database`);
         return null;
       }
 
@@ -107,7 +104,6 @@ export class EngineService {
         createdById: dbPipeline.createdById || 'system'
       };
 
-      console.log(`[Engine] Successfully retrieved pipeline ${id} from database`);
       return pipeline;
     } catch (error) {
       console.error(`[Engine] Error retrieving pipeline ${id}:`, error);
@@ -609,7 +605,7 @@ export class EngineService {
       
       // Initialize deployment service
       console.log(`[EngineService] Initializing DeploymentService`);
-      const deploymentService = new DeploymentService();
+      const deploymentService = new DeploymentService(prisma);
       
       // Deploy the pipeline run if deployment is enabled
       if (run.pipeline.deploymentEnabled) {
@@ -618,7 +614,7 @@ export class EngineService {
           : (run.pipeline.deploymentConfig || {});
           
         await deploymentService.deployPipelineRun(runId, {
-          platform: run.pipeline.deploymentPlatform || 'default',
+          platform: (run.pipeline.deploymentPlatform as 'aws' | 'aws_ec2' | 'aws_ecs' | 'gcp' | 'azure' | 'kubernetes' | 'custom') || 'aws',
           config: deployConfig
         });
       }

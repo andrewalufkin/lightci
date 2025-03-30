@@ -15,10 +15,21 @@
 		"lint": "eslint src/**/*.ts",
 		"proto": "protoc --plugin=protoc-gen-ts_proto=./node_modules/.bin/protoc-gen-ts_proto --ts_proto_out=src/proto --ts_proto_opt=esModuleInterop=true,outputServices=grpc-js,env=node proto/engine.proto",
 		"apply-migration": "node apply-migration.js",
-		"drop-constraint": "npx prisma db execute --file ./prisma/drop-constraint.sql"
+		"drop-constraint": "npx prisma db execute --file ./prisma/drop-constraint.sql",
+		"diagnose-instance": "tsx src/utils/diagnose-instance.ts",
+		"fix-instance": "tsx src/utils/fix-instance-security.ts",
+		"recover-key": "tsx src/utils/recover-instance-key.ts",
+		"fix-npm": "node scripts/fix-npm-dependencies.js",
+		"fix-ec2-node": "node scripts/fix-ec2-node.js",
+		"fix-ec2-pm2": "node scripts/fix-ec2-pm2.js",
+		"fix-ec2-instance": "node scripts/fix-ec2-instance.js",
+		"check-archive": "node scripts/check-deployment-archive.js"
 	},
 	"dependencies": {
 		"@aws-sdk/client-ec2": "^3.756.0",
+		"@aws-sdk/client-s3": "^3.758.0",
+		"@aws-sdk/client-ssm": "^3.777.0",
+		"@aws-sdk/s3-request-presigner": "^3.758.0",
 		"@grpc/grpc-js": "^1.9.13",
 		"@grpc/proto-loader": "^0.7.10",
 		"@octokit/rest": "^21.1.1",
@@ -27,6 +38,7 @@
 		"@types/bull": "^4.10.4",
 		"@types/mime-types": "^2.1.4",
 		"@types/node-cron": "^3.0.11",
+		"@types/winston": "^2.4.4",
 		"ajv": "^8.12.0",
 		"ajv-formats": "^2.1.1",
 		"axios": "^1.7.9",
@@ -42,9 +54,11 @@
 		"jsonwebtoken": "^9.0.2",
 		"mime-types": "^2.1.35",
 		"node-cron": "^3.0.3",
+		"node-ssh": "^13.2.1",
 		"prisma": "^6.5.0",
 		"ts-proto": "^1.165.1",
 		"uuid": "^9.0.1",
+		"winston": "^3.17.0",
 		"zod": "^3.22.4"
 	},
 	"devDependencies": {

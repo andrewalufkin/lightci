@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { api } from '@/services/api';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 
 interface Pipeline {

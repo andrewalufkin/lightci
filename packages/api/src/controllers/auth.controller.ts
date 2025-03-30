@@ -2,7 +2,7 @@ import type { Request, Response } from 'express-serve-static-core';
 import { hashPassword, comparePasswords, generateJWT, generateAPIKey } from '../utils/auth.utils';
 import { registerSchema, loginSchema, createApiKeySchema, updateUserSchema } from '../utils/validation.schemas';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
-import { prisma } from '../lib/prisma';
+import { prisma } from '../db.js';
 
 export async function register(req: Request, res: Response) {
   try {
@@ -213,7 +213,7 @@ export async function createApiKey(req: AuthenticatedRequest, res: Response) {
     const apiKey = await prisma.apiKey.create({
       data: {
         userId: req.user.id,
-        keyName: validatedData.keyName || validatedData.name, // Support both name formats for tests
+        keyName: validatedData.keyName,
         keyPrefix: prefix,
         keyHash: hash,
         expiresAt: validatedData.expiresAt ? new Date(validatedData.expiresAt) : null,
@@ -382,3 +382,20 @@ export async function updateUser(req: AuthenticatedRequest, res: Response) {
 
 // Alias revokeApiKey to maintain backward compatibility 
 export const revokeApiKey = deleteApiKey;
+
+// Add deleteUser function to the controller
+export async function deleteUser(req: AuthenticatedRequest, res: Response) {
+  try {
+    const userId = req.user.id;
+
+    // Delete the user - this will cascade delete related records due to DB relationships
+    await prisma.user.delete({
+      where: { id: userId }
+    });
+
+    res.status(204).send();
+  } catch (error) {
+    console.error('Error deleting user:', error);
+    res.status(500).json({ error: 'Failed to delete user account' });
+  }
+}

@@ -4,13 +4,23 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ChevronLeft, ChevronRight, Trash2, ChevronDown } from 'lucide-react';
-import { api, Build as APIBuild } from '../services/api';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { PipelineSteps } from '@/components/pipelines/PipelineSteps';
 import { BuildArtifacts } from '@/components/builds/BuildArtifacts';
+import type { Build as ApiBuild } from '@/types/api';
 
-interface Build extends APIBuild {
-  parameters?: Record<string, string>;
+interface StepResult {
+  name: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  duration?: string;
+  logs?: string[];
+  error?: string;
+  output?: string;
+}
+
+interface Build extends ApiBuild {
+  stepResults?: StepResult[];
 }
 
 interface Pipeline {
@@ -29,6 +39,10 @@ interface PaginatedResponse {
   };
 }
 
+function isNumber(value: unknown): value is number {
+  return typeof value === 'number' && !isNaN(value);
+}
+
 const PipelineHistory: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -36,18 +50,18 @@ const PipelineHistory: React.FC = () => {
   const [builds, setBuilds] = useState<Build[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalBuilds, setTotalBuilds] = useState(0);
-  const [expandedBuilds, setExpandedBuilds] = useState<Set<string>>(new Set());
-  const limit = 10;
+  const itemsPerPage = 10;
+  const [expandedBuildId, setExpandedBuildId] = useState<string | null>(null);
 
   console.log('PipelineHistory rendering with state:', {
     id,
     loading,
     error,
     buildsCount: builds?.length ?? 0,
-    page,
+    currentPage,
     totalPages,
     totalBuilds
   });
@@ -68,26 +82,40 @@ const PipelineHistory: React.FC = () => {
 
   useEffect(() => {
     const fetchBuilds = async () => {
+      setLoading(true); // Set loading state to true before fetch
+
       try {
-        setLoading(true);
-        console.log('Fetching runs for pipeline:', id);
+        const response = await api.listRuns(currentPage, itemsPerPage, id);
+        setBuilds(response.data);
         
-        const data = await api.listRuns(page, limit, id);
-        console.log('Fetched data:', data);
+        // Handle total builds - use 0 for any non-numeric values
+        let totalValue = 0;
+        try {
+          totalValue = Number(response.total);
+          if (isNaN(totalValue)) totalValue = 0;
+        } catch (e) {
+          totalValue = 0;
+        }
+        setTotalBuilds(totalValue);
         
-        setBuilds(data.data);
-        setTotalBuilds(data.pagination.total);
-        setTotalPages(Math.ceil(data.pagination.total / limit));
+        // Calculate pages without direct arithmetic that triggers linter
+        let calculatedPages = 1;
+        if (totalValue > 0 && itemsPerPage > 0) {
+          calculatedPages = Math.max(1, Math.ceil(totalValue / itemsPerPage));
+        }
+        
+        setTotalPages(calculatedPages);
+        setError(null);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
-        console.error('Error fetching runs:', err);
+        console.error('Error fetching builds:', err);
+        setError('Failed to load builds');
       } finally {
-        setLoading(false);
+        setLoading(false); // IMPORTANT: Set loading to false regardless of success/failure
       }
     };
 
     fetchBuilds();
-  }, [id, page]);
+  }, [id, currentPage, itemsPerPage]);
 
   const formatDuration = (start: string, end: string) => {
     const duration = new Date(end).getTime() - new Date(start).getTime();
@@ -127,17 +155,11 @@ const PipelineHistory: React.FC = () => {
   };
 
   const toggleBuildExpanded = (buildId: string) => {
-    setExpandedBuilds(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(buildId)) {
-        newSet.delete(buildId);
-      } else {
-        newSet.add(buildId);
-        // Log the build steps when expanding
-        const build = builds.find(b => b.id === buildId);
-        console.log('Build steps for build', buildId, ':', build?.stepResults);
+    setExpandedBuildId(prev => {
+      if (prev === buildId) {
+        return null;
       }
-      return newSet;
+      return buildId;
     });
   };
 
@@ -170,7 +192,7 @@ const PipelineHistory: React.FC = () => {
             )}
           </div>
           <div className="text-sm text-gray-500">
-            Total Builds: {totalBuilds}
+            Total Builds: {isNaN(totalBuilds) ? 0 : totalBuilds}
           </div>
         </div>
         <Button
@@ -229,7 +251,7 @@ const PipelineHistory: React.FC = () => {
                   >
                     <ChevronDown 
                       className={`w-5 h-5 transform transition-transform ${
-                        expandedBuilds.has(build.id) ? 'rotate-180' : ''
+                        expandedBuildId === build.id ? 'rotate-180' : ''
                       }`}
                     />
                   </Button>
@@ -244,7 +266,7 @@ const PipelineHistory: React.FC = () => {
                 </div>
               </div>
               
-              {expandedBuilds.has(build.id) && (
+              {expandedBuildId === build.id && (
                 <div className="mt-4 space-y-4">
                   {build.stepResults && (
                     <PipelineSteps 
@@ -277,20 +299,20 @@ const PipelineHistory: React.FC = () => {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1 || loading}
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1 || loading}
             >
               <ChevronLeft className="h-4 w-4" />
               Previous
             </Button>
             <span className="text-sm text-gray-500">
-              Page {page} of {totalPages}
+              Page {currentPage} of {totalPages}
             </span>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages || loading}
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages || loading}
             >
               Next
               <ChevronRight className="h-4 w-4" />

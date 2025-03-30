@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
-import { Terminal, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Terminal, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp, AlertCircle } from 'lucide-react';
 
 interface Step {
   name: string;
@@ -57,7 +57,31 @@ const getStatusBadge = (status: Step['status']) => {
 
 export const PipelineSteps: React.FC<PipelineStepsProps> = ({ steps, expanded = false }) => {
   const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set());
+  const [stuckSteps, setStuckSteps] = useState<Set<string>>(new Set());
   console.log('[PipelineSteps] Rendering steps:', steps);
+  
+  // Detect potentially stuck deployment steps
+  useEffect(() => {
+    const checkStuckDeploymentSteps = () => {
+      const newStuckSteps = new Set<string>();
+      
+      steps.forEach(step => {
+        // If a step has been running for more than 30 seconds and contains certain keywords
+        if (step.status === 'running' && 
+            (step.name.toLowerCase().includes('deploy') || step.name.toLowerCase().includes('serve')) &&
+            step.duration && 
+            parseInt(step.duration) > 30) {
+          newStuckSteps.add(step.name);
+        }
+      });
+      
+      setStuckSteps(newStuckSteps);
+    };
+    
+    // Check every 5 seconds
+    const interval = setInterval(checkStuckDeploymentSteps, 5000);
+    return () => clearInterval(interval);
+  }, [steps]);
   
   const toggleErrorExpanded = (stepName: string) => {
     setExpandedErrors(prev => {
@@ -82,6 +106,7 @@ export const PipelineSteps: React.FC<PipelineStepsProps> = ({ steps, expanded = 
         });
         
         const isErrorExpanded = expandedErrors.has(step.name);
+        const isStuck = stuckSteps.has(step.name);
         
         return (
           <div
@@ -136,6 +161,26 @@ export const PipelineSteps: React.FC<PipelineStepsProps> = ({ steps, expanded = 
                     <pre className="text-sm text-red-700 font-mono whitespace-pre-wrap">
                       {step.error}
                     </pre>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {isStuck && (
+              <div className="mt-4 bg-amber-50 border border-amber-200 rounded-md p-4">
+                <div className="flex items-start">
+                  <AlertCircle className="w-5 h-5 text-amber-500 mr-2 mt-0.5" />
+                  <div>
+                    <p className="text-amber-800 font-medium">This step may be stuck</p>
+                    <p className="text-amber-700 text-sm mt-1">
+                      If this is a deployment step using a background server process (like 'serve -s build &'), 
+                      it might appear stuck because the server keeps running. Consider:
+                    </p>
+                    <ul className="list-disc pl-5 text-amber-700 text-sm mt-2">
+                      <li>Using a proper deployment platform instead of running a local server</li>
+                      <li>Using a process manager like PM2 for long-running processes</li>
+                      <li>Modifying the command to not run in the background with '&'</li>
+                    </ul>
                   </div>
                 </div>
               </div>

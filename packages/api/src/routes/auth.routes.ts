@@ -1,7 +1,6 @@
 import express from 'express';
 import type { Request, Response, NextFunction, RequestHandler } from 'express-serve-static-core';
 import * as bcrypt from 'bcrypt';
-import { testDb } from '../test/utils/testDb.js';
 import { AuthenticationError, ValidationError, AuthorizationError } from '../utils/errors.js';
 import { generateJWT, verifyJWT } from '../utils/auth.utils.js';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware.js';
@@ -9,6 +8,7 @@ import { authenticate } from '../middleware/auth.middleware.js';
 import { Router } from 'express';
 import { validateSchema } from '../middleware/validation.js';
 import * as authController from '../controllers/auth.controller.js';
+import { prisma } from '../db.js';
 
 interface RegisterBody {
   email: string;
@@ -39,7 +39,7 @@ const register: RequestHandler<{}, any, RegisterBody> = async (req, res, next) =
     }
 
     // Check if user exists
-    const existingUser = await testDb.user.findUnique({
+    const existingUser = await prisma.user.findUnique({
       where: { email }
     });
 
@@ -49,7 +49,7 @@ const register: RequestHandler<{}, any, RegisterBody> = async (req, res, next) =
 
     // Create user
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await testDb.user.create({
+    const user = await prisma.user.create({
       data: {
         email,
         username,
@@ -84,7 +84,7 @@ const login: RequestHandler<{}, any, LoginBody> = async (req, res, next) => {
     const { email, password } = req.body;
 
     // Find user
-    const user = await testDb.user.findUnique({
+    const user = await prisma.user.findUnique({
       where: { email }
     });
 
@@ -121,7 +121,7 @@ const createApiKey: RequestHandler = async (req: Request, res: Response, next: N
     const keyPrefix = 'test';
     const keyHash = await bcrypt.hash('test-api-key-' + Date.now(), 10);
 
-    const apiKey = await testDb.apiKey.create({
+    const apiKey = await prisma.apiKey.create({
       data: {
         userId: authenticatedReq.user.id,
         keyName: name,
@@ -144,7 +144,7 @@ const createApiKey: RequestHandler = async (req: Request, res: Response, next: N
 const listApiKeys: RequestHandler = async (req: Request, res: Response, next: NextFunction) => {
   const authenticatedReq = req as AuthenticatedRequest;
   try {
-    const apiKeys = await testDb.apiKey.findMany({
+    const apiKeys = await prisma.apiKey.findMany({
       where: { userId: authenticatedReq.user.id }
     });
 
@@ -165,7 +165,7 @@ const deleteApiKey: RequestHandler = async (req: Request, res: Response, next: N
   try {
     const { keyId } = req.params;
 
-    const apiKey = await testDb.apiKey.findUnique({
+    const apiKey = await prisma.apiKey.findUnique({
       where: { id: keyId }
     });
 
@@ -179,7 +179,7 @@ const deleteApiKey: RequestHandler = async (req: Request, res: Response, next: N
       return;
     }
 
-    await testDb.apiKey.delete({
+    await prisma.apiKey.delete({
       where: { id: keyId }
     });
 
@@ -189,10 +189,35 @@ const deleteApiKey: RequestHandler = async (req: Request, res: Response, next: N
   }
 };
 
-router.post('/register', register);
-router.post('/login', login);
-router.post('/api-keys', authenticate, createApiKey);
-router.get('/api-keys', authenticate, listApiKeys);
-router.delete('/api-keys/:keyId', authenticate, deleteApiKey);
+// Delete user account
+const deleteUser: RequestHandler = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = req.user.id;
+
+    // Delete the user - this will cascade delete related records due to DB relationships:
+    // - API keys (onDelete: Cascade)
+    // - Organization memberships (onDelete: Cascade)
+    // - User projects (onDelete: Cascade)
+    // - Repository connections (onDelete: Cascade)
+    // - Notification preferences (onDelete: Cascade)
+    // - Usage records (onDelete: SetNull)
+    // - Billing periods (onDelete: SetNull)
+    await prisma.user.delete({
+      where: { id: userId }
+    });
+
+    res.status(204).send();
+  } catch (error) {
+    console.error('Error deleting user:', error);
+    res.status(500).json({ error: 'Failed to delete user account' });
+  }
+};
+
+router.post('/register', authController.register);
+router.post('/login', authController.login);
+router.post('/api-keys', authenticate, authController.createApiKey);
+router.get('/api-keys', authenticate, authController.listApiKeys);
+router.delete('/api-keys/:keyId', authenticate, authController.deleteApiKey);
+router.delete('/delete-account', authenticate, authController.deleteUser);
 
 export default router; 
