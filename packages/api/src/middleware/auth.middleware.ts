@@ -75,6 +75,8 @@ export const authenticate = async (
         fullName: user.fullName || undefined
       };
       
+      req.userId = decoded.userId;
+
       next();
     } catch (error) {
       console.error('[Auth Error]', error);

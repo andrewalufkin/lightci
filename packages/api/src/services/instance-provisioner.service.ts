@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { EC2Client, RunInstancesCommand, DescribeInstancesCommand, _InstanceType, TerminateInstancesCommand } from '@aws-sdk/client-ec2';
+import { EC2Client, RunInstancesCommand, DescribeInstancesCommand, _InstanceType, TerminateInstancesCommand, DeleteKeyPairCommand } from '@aws-sdk/client-ec2';
 import { BillingService } from './billing.service.js';
 import { execAsync } from '../utils/execAsync.js';
 import * as path from 'path';
@@ -716,45 +716,132 @@ echo "Instance setup completed successfully"
    * Terminate an EC2 instance and track deployment hours
    */
   async terminateInstance(deploymentId: string): Promise<void> {
+    console.log(`[InstanceProvisionerService] Attempting to terminate instance for deployment ${deploymentId}`);
+
+    let deployment;
     try {
-      // Get deployment details
-      const deployment = await this.prisma.autoDeployment.findUnique({
-        where: { id: deploymentId }
+      deployment = await this.prisma.autoDeployment.findUnique({
+        where: { id: deploymentId },
+        include: { pipeline: true } // Include the pipeline to get deploymentConfig
       });
 
       if (!deployment) {
-        throw new Error(`Deployment ${deploymentId} not found`);
+        console.log(`[InstanceProvisionerService] Deployment ${deploymentId} not found. Assuming already terminated.`);
+        return;
       }
 
-      // Terminate the EC2 instance
-      const command = new TerminateInstancesCommand({
-        InstanceIds: [deployment.instanceId]
+      if (deployment.status === 'terminated') {
+        console.log(`[InstanceProvisionerService] Deployment ${deploymentId} already marked as terminated.`);
+        return;
+      }
+      
+      const instanceId = deployment.instanceId;
+      if (!instanceId) {
+        console.warn(`[InstanceProvisionerService] Deployment ${deploymentId} has no associated instanceId. Marking as terminated.`);
+        // Update status even if no instance to terminate
+        await this.prisma.autoDeployment.update({
+          where: { id: deploymentId },
+          data: { 
+            status: 'terminated',
+            metadata: { 
+              ...(typeof deployment.metadata === 'object' ? deployment.metadata : {}),
+              terminatedAt: new Date().toISOString(),
+              terminationReason: 'NoInstanceIdFound'
+            }
+          }
+        });
+        return;
+      }
+
+      console.log(`[InstanceProvisionerService] Terminating EC2 instance ${instanceId} for deployment ${deploymentId}`);
+      const terminateCommand = new TerminateInstancesCommand({
+        InstanceIds: [instanceId],
       });
+      await this.ec2Client.send(terminateCommand);
+      console.log(`[InstanceProvisionerService] EC2 instance ${instanceId} termination initiated.`);
 
-      await this.ec2Client.send(command);
-
-      // Track deployment end for billing
+      // Track termination for billing
       try {
         await this.billingService.trackDeploymentEnd(deploymentId);
-      } catch (error) {
-        console.error('[InstanceProvisionerService] Error tracking deployment end:', error);
-        // Don't fail instance termination if billing tracking fails
+      } catch (billingError) {
+        console.error(`[InstanceProvisionerService] Error tracking deployment end for ${deploymentId}:`, billingError);
+        // Don't stop termination if billing fails
       }
 
-      // Update deployment status
+      // ---- Start Key Pair Deletion ----
+      let keyPairName: string | undefined;
+      if (deployment.pipeline?.deploymentConfig) {
+        try {
+          // Nested try-catch for key deletion logic specifically
+          try { 
+            const config = typeof deployment.pipeline.deploymentConfig === 'string'
+              ? JSON.parse(deployment.pipeline.deploymentConfig)
+              : deployment.pipeline.deploymentConfig;
+            
+            // Look for key name in expected locations
+            keyPairName = config?.keyPairName || config?.config?.keyPairName || config?.keyName; 
+            
+            if (keyPairName) {
+              console.log(`[InstanceProvisionerService] Found key pair name "${keyPairName}" for instance ${instanceId}`);
+              // Use the existing SshKeyService instance to delete the key pair
+              await this.sshKeyService.deleteKeyPair(keyPairName); 
+              console.log(`[InstanceProvisionerService] Successfully deleted key pair "${keyPairName}"`);
+            } else {
+              console.warn(`[InstanceProvisionerService] Could not find key pair name in pipeline config for instance ${instanceId}. Skipping key pair deletion.`);
+            }
+          } catch (keyDeletionError) {
+            // Catch errors specifically from key deletion process
+            console.error(`[InstanceProvisionerService] Error during key pair deletion for "${keyPairName || 'unknown'}":`, keyDeletionError);
+            // Log the error but continue with marking deployment as terminated
+          }
+        } catch (parseError) {
+          // Catch errors from parsing the deployment config
+          console.error(`[InstanceProvisionerService] Error parsing deployment config for key pair name:`, parseError);
+        }
+      } else {
+        console.warn(`[InstanceProvisionerService] No pipeline or deployment config found for deployment ${deploymentId}. Skipping key pair deletion.`);
+      }
+      // ---- End Key Pair Deletion ----
+
+      // Update the deployment status in the database
       await this.prisma.autoDeployment.update({
         where: { id: deploymentId },
-        data: {
+        data: { 
           status: 'terminated',
-          metadata: {
-            ...(typeof deployment.metadata === 'object' && deployment.metadata !== null ? deployment.metadata : {}),
-            terminatedAt: new Date().toISOString()
+          metadata: { 
+            ...(typeof deployment.metadata === 'object' ? deployment.metadata : {}),
+            terminatedAt: new Date().toISOString(),
+            terminationReason: 'InstanceTerminated'
           }
         }
       });
+
+      console.log(`[InstanceProvisionerService] Marked deployment ${deploymentId} as terminated in database.`);
+
     } catch (error) {
-      console.error('[InstanceProvisionerService] Failed to terminate instance:', error);
-      throw new Error(`Failed to terminate instance: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`[InstanceProvisionerService] Error terminating instance for deployment ${deploymentId}:`, error);
+      
+      // Attempt to update the database record even if termination fails
+      if (deploymentId && deployment) { // Ensure deployment was fetched before trying to update
+        try {
+          await this.prisma.autoDeployment.update({
+            where: { id: deploymentId },
+            data: {
+              status: 'terminated', // Mark as terminated even if AWS call failed
+              metadata: {
+                ...(typeof deployment.metadata === 'object' ? deployment.metadata : {}),
+                terminatedAt: new Date().toISOString(),
+                terminationError: error instanceof Error ? error.message : 'Unknown error during termination'
+              }
+            }
+          });
+          console.log(`[InstanceProvisionerService] Marked deployment ${deploymentId} as terminated in database despite error.`);
+        } catch (dbError) {
+          console.error(`[InstanceProvisionerService] Failed to update deployment status after termination error:`, dbError);
+        }
+      }
+      // Rethrow the original error to signal failure upstream
+      throw new Error(`Failed to terminate instance or associated resources for deployment ${deploymentId}`);
     }
   }
 

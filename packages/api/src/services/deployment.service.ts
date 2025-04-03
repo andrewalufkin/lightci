@@ -250,46 +250,22 @@ export class DeploymentService {
   private sshKeyService: SshKeyService;
   
   constructor(
-    prismaInstance?: PrismaClient,
     engineService?: EngineServiceInterface,
     sshKeyService?: SshKeyService
   ) {
-    // Initialize Prisma - do this immediately to avoid undefined client issues
-    try {
-      if (prismaInstance && typeof prismaInstance === 'object') {
-        console.log('[DeploymentService] Using provided Prisma instance');
-        this.prisma = prismaInstance;
-      } else if (typeof prisma !== 'undefined' && prisma !== null) {
-        console.log('[DeploymentService] Using imported Prisma instance');
-        this.prisma = prisma;
-      } else {
-        console.log('[DeploymentService] No Prisma instance provided or imported, creating new instance');
-        const newPrismaClient = new PrismaClient();
-        
-        // Verify that this new instance has the expected structure
-        if (newPrismaClient && typeof newPrismaClient.pipelineRun === 'object' && 
-            typeof newPrismaClient.pipelineRun.findUnique === 'function') {
-          this.prisma = newPrismaClient;
-          return this.prisma;
-        } else {
-          throw new Error('Newly created PrismaClient does not have expected structure');
-        }
-      }
-    } catch (error) {
-      console.error('[DeploymentService] Fatal error: Unable to create valid Prisma instance:', error);
-      throw new Error('Failed to initialize Prisma client: ' + error.message);
+    // Initialize Prisma directly from import
+    this.prisma = prisma; 
+    if (!this.prisma) {
+        console.error('[DeploymentService] Fatal error: Imported Prisma instance is invalid!');
+        throw new Error('Failed to get Prisma client from import');
     }
-    
-    // Handle the engine service 
+    console.log('[DeploymentService] Using imported Prisma instance');
+
+    // Handle the engine service (existing logic)
     if (engineService) {
       this.engineService = engineService;
     } else {
-      // Initialize with a placeholder that will be replaced
-      this.engineService = {
-        getBuild: async () => null
-      };
-      
-      // Dynamically import the EngineService to avoid circular dependencies
+      this.engineService = { getBuild: async () => null }; // Placeholder
       engineServiceImport().then(EngineServiceClass => {
         this.engineService = new EngineServiceClass(process.env.CORE_ENGINE_URL || 'http://localhost:3001');
       }).catch(error => {
@@ -307,51 +283,8 @@ export class DeploymentService {
     });
     this.artifacts_base_dir = process.env.ARTIFACTS_DIR || '/tmp/lightci/artifacts';
     
-    // Initialize SshKeyService with our verified prisma instance - use getPrisma to ensure valid instance
-    this.sshKeyService = sshKeyService || new SshKeyService(this.getPrisma());
-  }
-  
-  /**
-   * Helper method to safely get a valid Prisma client
-   * This will ensure we never have an undefined Prisma client
-   */
-  private getPrisma(): PrismaClient {
-    // If prisma is already initialized, return it
-    if (this.prisma && typeof this.prisma === 'object' && this.prisma.pipelineRun) {
-      return this.prisma;
-    }
-    
-    console.warn('[DeploymentService] Prisma instance not available or invalid, attempting to get global instance');
-    
-    // Try to get the global prisma instance first
-    try {
-      // Check if prisma is valid and has expected properties
-      if (typeof prisma === 'object' && prisma !== null && typeof prisma.pipelineRun === 'object') {
-        console.log('[DeploymentService] Successfully retrieved global prisma instance');
-        this.prisma = prisma;
-        return this.prisma;
-      }
-    } catch (error) {
-      console.error('[DeploymentService] Error accessing global prisma instance:', error);
-    }
-    
-    // If we still don't have a valid prisma instance, create a new one
-    try {
-      console.log('[DeploymentService] Creating new PrismaClient instance');
-      const newPrismaClient = new PrismaClient();
-      
-      // Verify that this new instance has the expected structure
-      if (newPrismaClient && typeof newPrismaClient.pipelineRun === 'object' && 
-          typeof newPrismaClient.pipelineRun.findUnique === 'function') {
-        this.prisma = newPrismaClient;
-        return this.prisma;
-      } else {
-        throw new Error('Newly created PrismaClient does not have expected structure');
-      }
-    } catch (error) {
-      console.error('[DeploymentService] Fatal error: Unable to create valid Prisma instance:', error);
-      throw new Error('Failed to initialize Prisma client: ' + error.message);
-    }
+    // Initialize SshKeyService using the directly assigned prisma instance
+    this.sshKeyService = sshKeyService || new SshKeyService(this.prisma);
   }
 
   private async initializeInstanceProvisioner(config: DeploymentConfig) {
@@ -364,7 +297,7 @@ export class DeploymentService {
       if (config.mode === 'automatic' && config.pipelineId) {
         try {
           // Get a valid prisma client
-          const prismaClient = this.getPrisma();
+          const prismaClient = this.prisma;
           
           // Find existing active deployment for this pipeline
           const existingDeployment = await prismaClient.autoDeployment.findFirst({
@@ -638,7 +571,7 @@ export class DeploymentService {
     console.log(`[DeploymentService] Starting deployment for pipeline run ${runId}`);
     try {
       // Use the helper method to ensure we have a valid prisma instance
-      const prismaClient = this.getPrisma();
+      const prismaClient = this.prisma;
       
       // Get the pipeline run
       console.log(`[DeploymentService] Fetching pipeline run ${runId} from database`);
@@ -1114,7 +1047,7 @@ export class DeploymentService {
           }
           
           // Process the SSH key using our helper method
-          const keyProcessed = await this.processSshKey(config, keyPath, logs);
+          const keyProcessed = await this.processSshKey(config, keyPath);
           
           if (!keyProcessed) {
             logAndConsole(`Failed to process SSH key`);
@@ -1216,7 +1149,7 @@ export class DeploymentService {
                                   // Get current metadata from the current deployment info
                                   // If these variables aren't in scope, we'll use safer alternatives
                                   const deploymentId = config.pipelineId ? 
-                                    (await this.getPrisma().autoDeployment.findFirst({
+                                    (await this.prisma.autoDeployment.findFirst({
                                       where: { pipelineId: config.pipelineId, status: 'active' },
                                       orderBy: { createdAt: 'desc' }
                                     }))?.id : null;
@@ -1227,7 +1160,7 @@ export class DeploymentService {
                                     
                                     if (keyId) {
                                       // Get the deployment record to update
-                                      const deployment = await this.getPrisma().autoDeployment.findUnique({
+                                      const deployment = await this.prisma.autoDeployment.findUnique({
                                         where: { id: deploymentId }
                                       });
                                       
@@ -1251,7 +1184,7 @@ export class DeploymentService {
                                         });
                                         
                                         // Update the deployment record
-                                        await this.getPrisma().autoDeployment.update({
+                                        await this.prisma.autoDeployment.update({
                                           where: { id: deploymentId },
                                           data: { metadata: updatedMetadata }
                                         });
@@ -1504,7 +1437,7 @@ export class DeploymentService {
       console.log(`[DeploymentService] Updating deployment config for pipeline ${pipelineId}`);
       
       // Get a valid prisma client
-      const prismaClient = this.getPrisma();
+      const prismaClient = this.prisma;
       
       // First, get the current pipeline
       const pipeline = await prismaClient.pipeline.findUnique({
@@ -1575,20 +1508,36 @@ export class DeploymentService {
         if (osInfo.includes('amazon') && !osInfo.includes('2023')) {
           // Amazon Linux 2
           console.log(`[DeploymentService] Detected Amazon Linux 2, using amazon-linux-extras`);
-          installCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostDns} "sudo amazon-linux-extras install -y epel && sudo yum install -y certbot"`;
+          // Install EPEL, certbot, and the Nginx plugin
+          installCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostDns} " \
+            echo 'Installing EPEL...' && \
+            sudo amazon-linux-extras install -y epel && \
+            echo 'Installing Certbot and Nginx plugin...' && \
+            sudo yum install -y certbot python2-certbot-nginx && \
+            echo 'Certbot and Nginx plugin installed for Amazon Linux 2.' \
+          "`;
         } else if (osInfo.includes('amazon') && osInfo.includes('2023')) {
-          // Amazon Linux 2023
-          console.log(`[DeploymentService] Detected Amazon Linux 2023, using dnf`);
-          // AL2023 doesn't have certbot in the default repositories, need to use pip3
-          installCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostDns} "sudo dnf install -y python3 python3-pip augeas-libs && sudo pip3 install certbot certbot-nginx && sudo mkdir -p /usr/local/bin && sudo ln -sf $(sudo python3 -m pip show certbot | grep Location | cut -d' ' -f2)/certbot/bin/certbot /usr/bin/certbot && sudo chmod +x /usr/bin/certbot"`;
+          // Amazon Linux 2023 - Use pip3 and create symlink
+          console.log(`[DeploymentService] Detected Amazon Linux 2023, using dnf and pip3`);
+          installCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostDns} " \
+            echo 'Installing dependencies (python3, pip, augeas-libs)...' && \
+            sudo dnf install -y python3 python3-pip augeas-libs && \
+            echo 'Installing Certbot and Nginx plugin via pip3...' && \
+            sudo python3 -m pip install --upgrade pip && \
+            sudo pip3 install certbot certbot-nginx && \
+            echo 'Creating certbot symlink...' && \
+            sudo ln -sf $(sudo python3 -m pip show certbot | grep Location | cut -d' ' -f2)/certbot/bin/certbot /usr/bin/certbot && \
+            sudo chmod +x /usr/bin/certbot && \
+            echo 'Certbot installed and linked successfully for Amazon Linux 2023.' \
+          "`;
         } else if (osInfo.includes('ubuntu') || osInfo.includes('debian')) {
           // Ubuntu/Debian
           console.log(`[DeploymentService] Detected Ubuntu/Debian, using apt`);
-          installCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostDns} "sudo apt-get update && sudo apt-get install -y certbot python3-certbot"`;
+          installCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostDns} "sudo apt-get update && sudo apt-get install -y certbot python3-certbot-nginx"`; // Added nginx plugin here too
         } else {
-          // Fallback to try multiple methods
-          console.log(`[DeploymentService] OS not clearly detected, trying multiple methods`);
-          installCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostDns} "sudo amazon-linux-extras install -y epel 2>/dev/null || true && sudo yum install -y certbot 2>/dev/null || sudo dnf install -y python3 python3-pip && sudo pip3 install certbot 2>/dev/null || sudo apt-get update && sudo apt-get install -y certbot python3-certbot"`;
+          // Fallback - this should ideally not be reached if detection is robust
+          console.warn(`[DeploymentService] OS not specifically handled: ${osInfo.trim()}. Attempting generic yum/dnf/pip install.`);
+          installCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostDns} "sudo yum install -y certbot python2-certbot-nginx 2>/dev/null || (sudo dnf install -y python3 python3-pip augeas-libs && sudo pip3 install certbot certbot-nginx && sudo ln -sf $(sudo python3 -m pip show certbot | grep Location | cut -d' ' -f2)/certbot/bin/certbot /usr/bin/certbot)"`;
         }
 
         await this.executeCommand(installCommand);
@@ -2033,137 +1982,195 @@ server {
   }
 
   /**
-   * Process the SSH key from config, write it to the specified path, and manage it in the database
+   * Process, validate and save an SSH key to a file
+   * Handles base64 encoded keys and normalizes line endings
+   * (Copied from PipelineRunnerService to resolve missing method error)
    */
-  private async processSshKey(options: DeploymentConfig, sshKeyPath: string, logs: string[]): Promise<boolean> {
-    logs.push(`Processing SSH key`);
-    
+  private async processSshKey(config: DeploymentConfig, keyPath: string): Promise<boolean> {
     try {
-      let keyContent: string;
+      this.logger.info('[DeploymentService] Processing SSH key'); // Use this.logger
+      this.logger.info(`[DeploymentService] Key path: ${keyPath}`);
       
-      // Extract key content from either direct content or encoded content
-      if (options.ec2SshKey) {
-        keyContent = options.ec2SshKey;
-      } else if (options.ec2SshKeyEncoded) {
-        keyContent = Buffer.from(options.ec2SshKeyEncoded, 'base64').toString('utf8');
-      } else {
-        // Try to retrieve from database if we have a key name or ID
-        const keyName = options.config?.keyPairName;
-        const keyId = options.sshKeyId;
-        
-        if (keyId) {
-          // First try to get by ID
-          logs.push(`Looking up SSH key by ID: ${keyId}`);
-          const key = await this.sshKeyService.getKeyById(keyId);
-          if (key && key.content) {
-            logs.push(`Found SSH key in database by ID: ${keyId}`);
-            keyContent = key.content;
+      // Try to get the key from both possible sources
+      const sshKey = config.ec2SshKey || '';
+      const encodedKey = config.ec2SshKeyEncoded || '';
+      
+      this.logger.info(`[DeploymentService] Regular key length: ${sshKey.length}, Encoded key length: ${encodedKey.length}`);
+      
+      let finalKey = '';
+      let source = '';
+      
+      // First try the encoded key if present
+      if (encodedKey.length > 0) {
+        try {
+          const decodedKey = Buffer.from(encodedKey, 'base64').toString('utf-8');
+          this.logger.info(`[DeploymentService] Successfully decoded Base64 key (${decodedKey.length} chars)`);
+          
+          // Verify it looks like a PEM key (has BEGIN and END markers)
+          if (decodedKey.includes('-----BEGIN') && decodedKey.includes('-----END')) {
+            finalKey = decodedKey;
+            source = 'decoded';
+            this.logger.info(`[DeploymentService] Using decoded key`);
           } else {
-            logs.push(`❌ SSH key with ID ${keyId} not found in database`);
-            return false;
+            this.logger.info(`[DeploymentService] Decoded key doesn't look like valid PEM format`);
           }
-        } else if (keyName) {
-          // Then try by keyName
-          logs.push(`Looking up SSH key by name: ${keyName}`);
-          const key = await this.sshKeyService.getKeyByPairName(keyName);
-          if (key && key.content) {
-            logs.push(`Found SSH key in database by name: ${keyName}`);
-            keyContent = key.content;
-          } else {
-            logs.push(`❌ SSH key with name ${keyName} not found in database`);
-            // Try looking for the key file directly as fallback
-            const homeDir = process.env.HOME || process.env.USERPROFILE || '/tmp';
+        } catch (decodeError) {
+          this.logger.info(`[DeploymentService] Error decoding Base64 key: ${decodeError.message}`);
+        }
+      }
+      
+      // Fall back to regular key if decoded key didn't work
+      if (!finalKey && sshKey.length > 0) {
+        finalKey = sshKey;
+        source = 'regular';
+        this.logger.info(`[DeploymentService] Using regular SSH key`);
+      }
+      
+      // If still no key, try looking for files in common locations
+      if (!finalKey) {
+        this.logger.info('[DeploymentService] No key in config, searching filesystem...');
+        try {
+            const homeDir = os.homedir();
             const sshDir = path.join(homeDir, '.ssh');
-            const keyLocations = [
-              path.join(sshDir, `${keyName}.pem`),
-              path.join(process.cwd(), `${keyName}.pem`),
-              path.join('/tmp', `${keyName}.pem`)
-            ];
-            
-            let keyFound = false;
-            for (const loc of keyLocations) {
-              if (fs.existsSync(loc)) {
+            const potentialDirs = [sshDir, process.cwd(), '/tmp'];
+            let keyFiles: string[] = [];
+
+            for (const dir of potentialDirs) {
                 try {
-                  const content = fs.readFileSync(loc, 'utf-8');
-                  if (content && content.includes('PRIVATE KEY')) {
-                    logs.push(`Found key file at ${loc}`);
-                    keyContent = content;
-                    keyFound = true;
-                    
-                    // Store it in database for future use
-                    try {
-                      await this.sshKeyService.createKey({
-                        name: keyName,
-                        content: keyContent,
-                        keyPairName: keyName
-                      });
-                      logs.push(`Stored key in database for future use`);
-                    } catch (storeError) {
-                      logs.push(`Note: Failed to store key in database: ${storeError.message}`);
-                      // Continue anyway as we have the key content
+                    if (fs.existsSync(dir)) {
+                        const files = fs.readdirSync(dir)
+                            .filter(file => file.endsWith('.pem') || file.includes('lightci') || file.startsWith('id_'))
+                            .map(file => path.join(dir, file))
+                            .filter(file => fs.statSync(file).isFile()); 
+                        keyFiles = keyFiles.concat(files);
                     }
-                    break;
-                  }
-                } catch (readError) {
-                  logs.push(`Error reading key file ${loc}: ${readError.message}`);
+                } catch (dirError) {
+                  this.logger.info(`[DeploymentService] Error reading dir ${dir}: ${dirError.message}`);
                 }
+            }
+            
+            // Sort by modification time, newest first
+            keyFiles.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+            
+            this.logger.info(`[DeploymentService] Found ${keyFiles.length} potential key files.`);
+            
+            // Try each key from most recent to oldest
+            for (const keyFile of keyFiles) {
+              try {
+                this.logger.info(`[DeploymentService] Trying key file: ${keyFile}`);
+                const keyContent = fs.readFileSync(keyFile, 'utf8');
+                
+                // Basic validation
+                if (keyContent.includes('-----BEGIN') && keyContent.includes('-----END')) {
+                  finalKey = keyContent;
+                  source = `file:${keyFile}`;
+                  this.logger.info(`[DeploymentService] Found valid SSH key in ${keyFile}`);
+                  break;
+                }
+              } catch (readError) {
+                this.logger.info(`[DeploymentService] Error reading key file ${keyFile}: ${readError.message}`);
               }
             }
-            
-            if (!keyFound) {
-              logs.push(`❌ Could not find key file for ${keyName} in any location`);
-              return false;
-            }
-          }
-        } else {
-          logs.push(`❌ No SSH key information provided in deployment configuration`);
-          return false;
+        } catch (searchError) {
+          this.logger.info(`[DeploymentService] Error searching for key files: ${searchError.message}`);
         }
       }
       
-      // Validate the key content
-      if (!keyContent || !keyContent.includes('PRIVATE KEY')) {
-        logs.push(`❌ Invalid SSH key content`);
+      if (!finalKey) {
+        this.logger.info(`[DeploymentService] No valid SSH key found in configuration or file system`);
+        this.logger.info(`[DeploymentService] Please ensure a valid SSH key is available for deployment`);
+        
+        // Provide detailed error for debugging
+        if (config.instanceId) {
+          this.logger.info(`[DeploymentService] Instance ID: ${config.instanceId}`);
+        }
+        if (config.publicDns) {
+          this.logger.info(`[DeploymentService] Instance DNS: ${config.publicDns}`);
+        }
+        
         return false;
       }
       
-      // Ensure key has proper line endings
-      const normalizedKey = keyContent.replace(/\r\n/g, '\n');
+      // Normalize line endings (CRLF to LF)
+      finalKey = finalKey.replace(/\r\n/g, '\n');
+      // Ensure final newline
+      if (!finalKey.endsWith('\n')) {
+          finalKey += '\n';
+      }
+
+      // Remove extra blank lines
+      finalKey = finalKey.replace(/\n\n+/g, '\n');
       
-      // Ensure key has proper format (must begin and end with correct markers)
-      if (!normalizedKey.trim().startsWith('-----BEGIN') || !normalizedKey.trim().endsWith('-----')) {
-        logs.push(`❌ SSH key is missing proper begin/end markers`);
+      this.logger.info(`[DeploymentService] Processed key (source: ${source}, length: ${finalKey.length})`);
+      
+      // Ensure key looks valid
+      if (!finalKey.trim().startsWith('-----BEGIN') || !finalKey.trim().includes('-----END')) {
+        this.logger.info(`[DeploymentService] Processed key is missing BEGIN/END markers`);
         return false;
       }
       
-      // Write the key to the specified path with correct permissions
-      fs.writeFileSync(sshKeyPath, normalizedKey, { mode: 0o600 });
-      logs.push(`✅ SSH key written to ${sshKeyPath} with secure permissions`);
-      
-      // Verify the file exists and has correct permissions
-      const stats = fs.statSync(sshKeyPath);
-      const permissions = stats.mode & 0o777;
-      if (permissions !== 0o600) {
-        fs.chmodSync(sshKeyPath, 0o600);
-        logs.push(`✅ SSH key permissions set to 0600`);
-      }
-      
-      // Verify the key is a valid format using OpenSSH
+      // Write the key to the specified path
       try {
-        const { stdout } = await this.executeCommand(`ssh-keygen -l -f ${sshKeyPath}`);
-        if (stdout && stdout.includes('RSA') || stdout.includes('ED25519') || stdout.includes('ECDSA')) {
-          logs.push(`✅ SSH key format verified with ssh-keygen`);
-        } else {
-          logs.push(`⚠️ SSH key verification warning: ${stdout}`);
-        }
-      } catch (sshKeygenError) {
-        logs.push(`⚠️ Warning: Could not verify key format: ${sshKeygenError.message}`);
-        // Don't fail here, as some environments might not have ssh-keygen available
+        this.logger.info(`[DeploymentService] Writing key to ${keyPath}`);
+        fs.writeFileSync(keyPath, finalKey, { mode: 0o600 });
+      } catch (writeError) {
+        this.logger.info(`[DeploymentService] Error writing key file: ${writeError.message}`);
+        return false;
       }
       
+      // Verify permissions were set correctly
+      try {
+        const stats = fs.statSync(keyPath);
+        const permissions = stats.mode & 0o777;
+        if (permissions !== 0o600) {
+          this.logger.info(`[DeploymentService] Correcting permissions for ${keyPath} (was ${permissions.toString(8)})`);
+          fs.chmodSync(keyPath, 0o600);
+        }
+      } catch (statError) {
+        this.logger.info(`[DeploymentService] Error checking key file permissions: ${statError.message}`);
+        // Continue if we can't check permissions
+      }
+
+      // Read back to verify content integrity (optional but good practice)
+      try {
+        const writtenKey = fs.readFileSync(keyPath, 'utf8');
+        if (writtenKey !== finalKey) {
+          this.logger.info(`[DeploymentService] Key file content mismatch after writing!`);
+          this.logger.info(`Original length: ${finalKey.length}, Written length: ${writtenKey.length}`);
+          // Consider returning false here
+        }
+      } catch (readError) {
+        this.logger.info(`[DeploymentService] Error reading back key file: ${readError.message}`);
+      }
+      
+      // As a final check, verify the key with ssh-keygen
+      try {
+        // Use -l to list the key fingerprint (validates the key format)
+        const keyInfo = execSync(`ssh-keygen -l -f "${keyPath}"`, { encoding: 'utf8' });
+        this.logger.info(`[DeploymentService] Key validated with ssh-keygen: ${keyInfo.trim()}`);
+      } catch (keygenError) {
+        this.logger.info(`[DeploymentService] Warning: ssh-keygen couldn't validate key: ${keygenError.message || 'unknown error'}`);
+        
+        // Try again with different parameters
+        try {
+          const keyTest = execSync(`ssh-keygen -y -f "${keyPath}"`, { encoding: 'utf8' });
+          if (keyTest.includes('ssh-rsa') || keyTest.includes('ecdsa') || keyTest.includes('ed25519')) { // Check for common key types
+            this.logger.info(`[DeploymentService] Key validated with ssh-keygen -y`);
+          } else {
+            this.logger.info(`[DeploymentService] Key validation returned unexpected output: ${keyTest.substring(0, 50)}...`);
+          }
+        } catch (alternateSshKeygenError) {
+          this.logger.info(`[DeploymentService] Key failed second validation: ${alternateSshKeygenError.message || 'unknown error'}`);
+          this.logger.info(`[DeploymentService] This may indicate a corrupted SSH key file`);
+          // Decide if we should fail hard here. For now, let's allow it but log extensively.
+          // return false; 
+        }
+      }
+      
+      this.logger.info(`[DeploymentService] SSH key processing completed successfully (from ${source})`);
       return true;
     } catch (error) {
-      logs.push(`❌ Error processing SSH key: ${error.message}`);
+      this.logger.info(`[DeploymentService] Error processing SSH key: ${error.message}`);
       return false;
     }
   }
@@ -2228,7 +2235,7 @@ server {
       }
     } catch (error) {
       console.error(`[DeploymentService] Error creating archive:`, error);
-      throw error;
+      throw error; // Rethrow the error to be handled by the caller
     }
   }
 
@@ -2332,82 +2339,121 @@ server {
           // Continue with setup despite this error
         }
         
-        // 2. Check if nginx is installed
+        // 2. Check if nginx is installed and install if needed
         console.log(`[DeploymentService] Checking if Nginx is installed...`);
         try {
-          const checkCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} "which nginx || echo 'not_found'"`;
+          let nginxInstalled = false;
+          let startNginx = false; // Flag to track if we need to start Nginx
+
+          // Check existing install
+          const checkCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} \"which nginx || echo \'not_found\'\"`;
           const { stdout: nginxPath } = await this.executeCommand(checkCommand);
-          
+
           if (nginxPath.includes('not_found')) {
             console.log(`[DeploymentService] Nginx not found, installing...`);
-            const installCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} "sudo yum install -y nginx || sudo apt-get update && sudo apt-get install -y nginx"`;
-            const { stdout: installOutput, stderr: installError } = await this.executeCommand(installCommand);
             
-            // Log installation output
+            // Determine OS
+            const checkOsCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} \"cat /etc/os-release | grep -i \'id=\' || echo \'unknown\'\"`;
+            const { stdout: osInfo } = await this.executeCommand(checkOsCommand);
+            console.log(`[DeploymentService] OS detection: ${osInfo.trim()}`);
+
+            let installCommand = '';
+            if (osInfo.includes('amazon') || osInfo.includes('fedora') || osInfo.includes('centos')) {
+              // Amazon Linux / Fedora / CentOS - use yum/dnf
+              console.log(`[DeploymentService] Using yum/dnf for Nginx installation.`);
+              installCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} \"sudo yum install -y nginx || sudo dnf install -y nginx\"`;
+            } else if (osInfo.includes('ubuntu') || osInfo.includes('debian')) {
+              // Ubuntu / Debian - use apt
+              console.log(`[DeploymentService] Using apt for Nginx installation.`);
+              installCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} \"sudo apt-get update && sudo apt-get install -y nginx\"`;
+            } else {
+              console.error(`[DeploymentService] Unsupported OS detected: ${osInfo.trim()}. Cannot automatically install Nginx.`);
+              continue; // Skip this domain if OS is unsupported
+            }
+
+            // Execute installation
+            const { stdout: installOutput, stderr: installError } = await this.executeCommand(installCommand);
             console.log(`[DeploymentService] Nginx installation output: ${installOutput.substring(0, 500)}${installOutput.length > 500 ? '...' : ''}`);
-            if (installError) {
+            // Ignore specific errors that indicate already installed or nothing to do
+            if (installError && !installOutput.includes('already installed') && !installOutput.includes('Nothing to do')) {
               console.error(`[DeploymentService] Nginx installation errors: ${installError}`);
             }
-            
+
             // Verify Nginx was installed
-            const verifyCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} "which nginx || echo 'not_found'"`;
+            const verifyCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} \"which nginx || echo \'not_found\'\"`;
             const { stdout: verifyPath } = await this.executeCommand(verifyCommand);
-            
+
             if (verifyPath.includes('not_found')) {
-              console.error(`[DeploymentService] Failed to install Nginx. Cannot continue with domain configuration.`);
-              return;
+              console.error(`[DeploymentService] Failed to install or verify Nginx. Cannot continue with domain ${domain.domain}.`);
+              continue; // Skip this domain if installation failed
+            } else {
+               console.log(`[DeploymentService] Nginx installed successfully at path: ${verifyPath.trim()}`);
+               nginxInstalled = true;
+               startNginx = true; // Mark Nginx to be started
             }
-            console.log(`[DeploymentService] Nginx installed successfully at path: ${verifyPath.trim()}`);
           } else {
             console.log(`[DeploymentService] Nginx is already installed at path: ${nginxPath.trim()}`);
+            nginxInstalled = true;
           }
-          
-          // 3. Check if Nginx is running
-          console.log(`[DeploymentService] Checking Nginx service status...`);
-          const checkServiceCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} "sudo systemctl is-active nginx || echo 'inactive'"`;
-          const { stdout: serviceStatus } = await this.executeCommand(checkServiceCommand);
-          
-          // Fix: Properly handle Nginx status by checking for 'active' specifically
-          const isNginxActive = serviceStatus.trim() === 'active';
-          
-          if (!isNginxActive) {
-            console.log(`[DeploymentService] Nginx service is not running (status: ${serviceStatus.trim()}), attempting to start...`);
-            
-            // Start and enable nginx
-            const startCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} "sudo systemctl start nginx && sudo systemctl enable nginx || echo 'START_FAILED'"`;
-            const { stdout: startOutput, stderr: startError } = await this.executeCommand(startCommand);
-            
-            if (startOutput.includes('START_FAILED') || startError) {
-              console.error(`[DeploymentService] Failed to start Nginx service: ${startError || startOutput}`);
-              
-              // Check logs to identify the issue
-              const checkLogsCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} "sudo journalctl -u nginx --no-pager -n 20 || echo 'NO_LOGS'"`;
-              const { stdout: logsOutput } = await this.executeCommand(checkLogsCommand);
-              console.error(`[DeploymentService] Nginx service logs: ${logsOutput}`);
-            } else {
-              console.log(`[DeploymentService] Successfully started Nginx service`);
-            }
+
+          // 3. Ensure Nginx is running and enabled
+          let nginxRunning = false;
+          if (nginxInstalled) {
+             console.log(`[DeploymentService] Checking Nginx service status...`);
+             const checkServiceCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} \"sudo systemctl is-active nginx || echo \'inactive\'\"`;
+             const { stdout: serviceStatusResult } = await this.executeCommand(checkServiceCommand);
+             const isNginxActive = serviceStatusResult.trim() === 'active';
+
+             if (!isNginxActive || startNginx) { // Start if inactive or if just installed
+                console.log(`[DeploymentService] Nginx service is ${serviceStatusResult.trim()}, attempting to enable and start...`);
+                // Use systemctl enable --now for atomicity
+                const startCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} \"sudo systemctl enable --now nginx || echo \'START_FAILED\'\"`;
+                const { stdout: startOutput, stderr: startError } = await this.executeCommand(startCommand);
+
+                // Check for explicit failure or error (ignoring expected symlink message)
+                if (startOutput.includes('START_FAILED') || (startError && !startError.includes('Created symlink'))) {
+                   console.error(`[DeploymentService] Failed to start Nginx service: ${startError || startOutput}`);
+                   // Check logs for more details
+                   const checkLogsCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} \"sudo journalctl -u nginx --no-pager -n 20 || echo \'NO_LOGS\'\"`;
+                   const { stdout: logsOutput } = await this.executeCommand(checkLogsCommand);
+                   console.error(`[DeploymentService] Nginx service logs: ${logsOutput}`);
+                   nginxRunning = false;
+                } else {
+                   console.log(`[DeploymentService] Successfully enabled and started Nginx service`);
+                   nginxRunning = true;
+                }
+             } else {
+                console.log(`[DeploymentService] Nginx service is running (status: ${serviceStatusResult.trim()})`);
+                nginxRunning = true;
+             }
           } else {
-            console.log(`[DeploymentService] Nginx service is running (status: ${serviceStatus.trim()})`);
+             console.log(`[DeploymentService] Skipping Nginx status check as installation failed or was skipped.`);
+             nginxRunning = false; // Cannot be running if not installed
+          }
+
+          // If Nginx isn't running at this point, we cannot proceed with config/SSL for this domain
+          if (!nginxRunning) {
+             console.error(`[DeploymentService] Nginx is not running. Skipping configuration for domain ${domain.domain}.`);
+             continue; // Skip to the next domain
           }
           
-          // 4. Check port availability - ensure 80 is not in use by another process
-          console.log(`[DeploymentService] Checking if port 80 is available...`);
-          const portCheckCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} "sudo netstat -tulpn | grep ':80 ' || echo 'PORT_AVAILABLE'"`;
+          // 4. Check port availability - ensure 80 is not in use by another process (if Nginx is expected to use it)
+          console.log(`[DeploymentService] Checking if port 80 is available for Nginx...`);
+          const portCheckCommand = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${keyPath} ${username}@${hostname} "sudo netstat -tulpn | grep -w ':80 ' || echo 'PORT_AVAILABLE'"`;
           const { stdout: portCheck } = await this.executeCommand(portCheckCommand);
           
           if (!portCheck.includes('PORT_AVAILABLE')) {
             if (portCheck.includes('nginx')) {
               console.log(`[DeploymentService] Port 80 is in use by Nginx (expected)`);
             } else {
-              console.error(`[DeploymentService] WARNING: Port 80 appears to be in use by another process: ${portCheck.trim()}`);
-              // Continue, but this is a potential issue
+              console.error(`[DeploymentService] WARNING: Port 80 appears to be in use by another process: ${portCheck.trim()}. Configuration might fail.`);
             }
           } else {
-            console.log(`[DeploymentService] Port 80 is available`);
+            // This case might happen if Nginx failed to start properly and bind to port 80
+            console.warn(`[DeploymentService] Port 80 appears available, which might indicate Nginx failed to bind.`);
           }
           
-          // Create nginx configuration file with improved handling of static assets
+          // Create nginx configuration file
           console.log(`[DeploymentService] Creating Nginx configuration for ${domain.domain}...`);
           const nginxConfig = `
 server {

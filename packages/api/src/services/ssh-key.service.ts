@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { EC2Client, CreateKeyPairCommand, DescribeInstancesCommand } from '@aws-sdk/client-ec2';
+import { EC2Client, CreateKeyPairCommand, DescribeInstancesCommand, DeleteKeyPairCommand } from '@aws-sdk/client-ec2';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -260,6 +260,65 @@ export class SshKeyService {
     } catch (error) {
       console.error(`[SshKeyService] Error associating key with deployment: ${error.message}`);
       throw error;
+    }
+  }
+
+  /**
+   * Delete an SSH key pair from AWS and the database
+   */
+  async deleteKeyPair(keyPairName: string): Promise<void> {
+    console.log(`[SshKeyService] Deleting key pair: ${keyPairName}`);
+    
+    let awsCredentials;
+    try {
+      // Attempt to find a relevant key record to potentially get credentials if needed
+      // This part is tricky as we might not have credentials readily available here.
+      // For now, assume default credentials or environment variables are set.
+      // TODO: Improve credential retrieval for key pair deletion. Maybe pass them in?
+      const ec2Client = new EC2Client({
+        region: process.env.AWS_DEFAULT_REGION || 'us-east-1' 
+      });
+      
+      const deleteCommand = new DeleteKeyPairCommand({ KeyName: keyPairName });
+      await ec2Client.send(deleteCommand);
+      console.log(`[SshKeyService] Successfully deleted key pair "${keyPairName}" from AWS.`);
+      
+    } catch (error) {
+      // Log AWS deletion error but continue to attempt DB deletion
+      console.error(`[SshKeyService] Error deleting key pair "${keyPairName}" from AWS: ${error.message}`);
+      // If the key doesn't exist in AWS (e.g., already deleted), don't throw an error
+      if (error.name !== 'InvalidKeyPair.NotFound') {
+         // We might still want to proceed to delete from DB, log and continue
+      }
+    }
+
+    try {
+      // Delete the key record from the database
+      const result = await this.prisma.sshKey.deleteMany({
+        where: { keyPairName: keyPairName },
+      });
+      
+      if (result.count > 0) {
+        console.log(`[SshKeyService] Successfully deleted ${result.count} key record(s) for "${keyPairName}" from database.`);
+      } else {
+        console.log(`[SshKeyService] No database record found for key pair "${keyPairName}".`);
+      }
+      
+      // Also attempt to delete the local file if it exists
+      try {
+        const keyPath = path.join(this.keyStorageDir, `${keyPairName}.pem`);
+        if (fs.existsSync(keyPath)) {
+          fs.unlinkSync(keyPath);
+          console.log(`[SshKeyService] Successfully deleted local key file: ${keyPath}`);
+        }
+      } catch (fileError) {
+        console.error(`[SshKeyService] Error deleting local key file for "${keyPairName}": ${fileError.message}`);
+      }
+
+    } catch (dbError) {
+      console.error(`[SshKeyService] Error deleting key record for "${keyPairName}" from database: ${dbError.message}`);
+      // Even if DB deletion fails, we don't necessarily want to halt everything.
+      // Depending on requirements, might re-throw here.
     }
   }
 } 
